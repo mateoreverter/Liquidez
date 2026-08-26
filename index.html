@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor de AUM y Liquidez Multimoneda</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chart.js DataLabels Plugin -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <!-- ARCHIVO DE DATOS LOCAL -->
+    <script src="datos_cluster.js"></script>
+    <style>
+        body { background-color: #0b111e; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+        .card { background-color: #131b2e; border: 1px solid #1e293b; }
+        .tab-btn { transition: all 0.2s ease; border-bottom: 3px solid transparent; }
+        .tab-active { border-bottom-color: #38bdf8; color: #38bdf8; font-weight: 700; }
+        .tab-inactive { color: #94a3b8; }
+        .tab-inactive:hover { color: #e2e8f0; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    </style>
+</head>
+<body class="p-4 md:p-6 space-y-5" onclick="cerrarDropdowns(event)">
+
+    <!-- MODAL EMERGENTE FICHA CLIENTE -->
+    <div id="modalCliente" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="card w-full max-w-lg p-6 rounded-2xl shadow-2xl border border-sky-500/40 relative animate-in fade-in zoom-in duration-200" onclick="event.stopPropagation()">
+            <button onclick="cerrarModal()" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xl font-bold p-1">✕</button>
+            <div class="flex items-center gap-3 mb-4 border-b border-slate-800 pb-3">
+                <span class="text-2xl">👤</span>
+                <div>
+                    <h3 class="text-lg font-bold text-white leading-tight" id="modalCuenta">Nombre Cliente</h3>
+                    <p class="text-xs text-sky-400 font-medium mt-0.5">Ficha Detallada de Cuenta</p>
+                </div>
+            </div>
+            <div class="space-y-3 text-sm">
+                <div class="flex justify-between bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                    <span class="text-slate-400">N° de Comitente:</span>
+                    <span class="font-bold text-emerald-400 text-base" id="modalComitente">-</span>
+                </div>
+                <div class="flex justify-between bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                    <span class="text-slate-400">Asesor Comercial:</span>
+                    <span class="font-semibold text-slate-200" id="modalAsesor">-</span>
+                </div>
+                <div class="flex justify-between bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                    <span class="text-slate-400">FA Asignado:</span>
+                    <span class="font-semibold text-slate-200" id="modalFA">-</span>
+                </div>
+                <div class="flex justify-between bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                    <span class="text-slate-400">Segmento / Negocio:</span>
+                    <span class="font-semibold text-slate-200" id="modalNegocio">-</span>
+                </div>
+                <div class="flex justify-between bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                    <span class="text-slate-400">Estado de Actividad:</span>
+                    <span class="font-semibold text-slate-200" id="modalActivo">-</span>
+                </div>
+            </div>
+            <div class="mt-5 text-right">
+                <button onclick="cerrarModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-4 py-2 rounded-xl transition">Cerrar ventana</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- HEADER Y CARGA -->
+    <header class="card p-5 rounded-2xl flex flex-col md:flex-row justify-between items-center gap-4 shadow-lg border-b-2 border-blue-500/30">
+        <div>
+            <h1 class="text-xl md:text-2xl font-bold text-white tracking-wide">📊 Monitor de AUM y Liquidez Multimoneda</h1>
+            <p class="text-xs text-slate-400 mt-1">Control operativo unificado de saldos CI, AUM y distribución por FA / Asesor</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <div id="fileStatus" class="bg-slate-900 border border-slate-700 px-4 py-2.5 rounded-xl text-xs text-amber-400 font-medium flex items-center gap-2 shadow-inner">
+                Buscando datos locales...
+            </div>
+        </div>
+    </header>
+
+    <!-- SOLAPAS -->
+    <nav class="flex overflow-x-auto border-b border-slate-800 gap-6 text-sm font-medium">
+        <button class="pb-3 px-2 tab-btn tab-active" onclick="seleccionarTab('aum', this)">1. AUM y Cuentas</button>
+        <button class="pb-3 px-2 tab-btn tab-inactive" onclick="seleccionarTab('liquidez', this)">2. Liquidez</button>
+    </nav>
+
+    <!-- BARRA DE FILTROS EN CASCADA -->
+    <section class="card p-3 rounded-xl flex flex-wrap gap-4 items-center text-xs justify-between">
+        <div class="flex flex-wrap gap-4 items-center">
+            <span class="font-bold text-slate-300">Filtros:</span>
+            
+            <div class="flex items-center gap-2" id="filtroMonedaBox" style="display: none;">
+                <label class="text-sky-400 font-bold" for="filtroMoneda">Moneda:</label>
+                <select id="filtroMoneda" class="bg-slate-900 border border-sky-500/50 rounded-lg px-2.5 py-1 text-sky-300 font-semibold focus:outline-none" onchange="renderizarTabActual()">
+                    <option value="ARS" selected>ARS ($ en CI)</option>
+                    <option value="MEP">MEP</option>
+                    <option value="Cable_CV7000">Cable + CV7000</option>
+                </select>
+            </div>
+
+            <div class="flex items-center gap-2">
+                <label class="text-slate-400" for="filtroFA">FA:</label>
+                <select id="filtroFA" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white focus:outline-none focus:border-blue-500" onchange="alCambiarFiltro('FA')">
+                    <option value="Todas">Todas</option>
+                </select>
+            </div>
+
+            <div class="relative flex items-center gap-2" onclick="event.stopPropagation()">
+                <label class="text-slate-400">Asesor(es):</label>
+                <button type="button" id="btnDropdownAsesor" onclick="toggleDropdownAsesor()" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1 text-white text-left min-w-[140px] max-w-[220px] truncate flex justify-between items-center gap-2">
+                    <span id="labelDropdownAsesor">Todas</span>
+                    <span class="text-[10px] text-slate-400">▼</span>
+                </button>
+
+                <div id="dropdownAsesorMenu" class="hidden absolute top-full left-16 mt-1 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-2 z-40 space-y-2">
+                    <input type="text" id="buscarAsesorInput" placeholder="Buscar asesor..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs text-white focus:outline-none" oninput="filtrarListaAsesoresUI()">
+                    <div class="flex justify-between text-[11px] text-sky-400 px-1">
+                        <button type="button" class="hover:underline" onclick="seleccionarTodosAsesores(true)">Seleccionar todos</button>
+                        <button type="button" class="hover:underline" onclick="seleccionarTodosAsesores(false)">Deseleccionar</button>
+                    </div>
+                    <div id="listaAsesoresCheckboxes" class="max-h-48 overflow-y-auto space-y-1 pr-1 text-slate-300 text-xs"></div>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-2" id="filtroNegocioBox">
+                <label class="text-slate-400" for="filtroNegocio">Negocio:</label>
+                <select id="filtroNegocio" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white focus:outline-none focus:border-blue-500" onchange="alCambiarFiltro('Negocio')">
+                    <option value="Todas">Todas</option>
+                </select>
+            </div>
+        </div>
+
+        <button onclick="borrarFiltros()" class="bg-rose-950/40 hover:bg-rose-900/60 border border-rose-700/50 text-rose-300 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition">
+            🔄 Borrar filtros
+        </button>
+    </section>
+
+    <!-- CONTENEDOR PRINCIPAL -->
+    <main id="tabContent" class="space-y-6">
+        <div class="card p-12 text-center text-slate-400 text-sm">
+            Cargando entorno...
+        </div>
+    </main>
+
+    <script>
+        Chart.register(ChartDataLabels);
+
+        let rawData = [];
+        let tabActual = 'aum';
+        let chartAUMInstance = null;
+        let chartCuentasInstance = null;
+        let chartPieInstance = null;
+        let asesoresSeleccionados = new Set();
+        let listaAsesoresVisibles = [];
+
+        function seleccionarTab(tab, element) {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.className = "pb-3 px-2 tab-btn tab-inactive";
+            });
+            element.className = "pb-3 px-2 tab-btn tab-active";
+            tabActual = tab;
+
+            const boxMoneda = document.getElementById('filtroMonedaBox');
+            boxMoneda.style.display = (tab === 'liquidez') ? 'flex' : 'none';
+            renderizarTabActual();
+        }
+
+        function extractFA(equipoStr) {
+            if (!equipoStr) return "Otro";
+            return String(equipoStr).split('/')[0].trim();
+        }
+
+        // CARGA AUTOMÁTICA AL ABRIR EL HTML
+        window.onload = () => {
+            if (typeof datosCluster !== 'undefined') {
+                rawData = datosCluster;
+
+                // Mapeo robusto: tolerante a mayúsculas y minúsculas generadas desde Pandas
+                rawData.forEach(row => {
+                    const equipoStr = row.Equipo || row.equipo || '';
+                    row.FA = extractFA(equipoStr);
+                    row.AUM = parseFloat(row['AUM en Dolares'] || row['AUM en Dólares'] || row['aum en dolares']) || 0;
+                    row.ARS_CI = parseFloat(row['$ Disponibles CI']) || 0;
+                    row.MEP_CI = parseFloat(row['MEP Disponibles CI']) || 0;
+                    row.MEP_BEND = parseFloat(row['MEP de Banco']) || 0;
+                    row.CV7000 = parseFloat(row['cv7000'] || row['CV7000']) || 0;
+                    row.CABLE_CI = parseFloat(row['Cable Disponibles CI']) || 0;
+                    row.CABLE_CV7000 = (row.CABLE_CI) + (row.CV7000);
+                    row.TC_MEP = parseFloat(row['Tipo Cbio MEP'] || row['Tipo Cambio MEP']) || 1540.0;
+
+                    const act = row.activo || row.Activo || row.ACTIVO;
+                    row.esActivo = (act === 1 || act === "1");
+
+                    row.negocio = row.negocio || row.Negocio || row.NEGOCIO || 'S/D';
+                    const esInt = String(row.negocio).toLowerCase().includes('internacional');
+                    
+                    const cpa = row.comitentepa || row.ComitentePA || row.Comitentepa;
+                    const cnormal = row.comitente || row.Comitente;
+                    row.comitenteNumero = esInt ? (cpa || cnormal || 'S/D') : (cnormal || 'S/D');
+
+                    row.asesor = row.asesor || row.Asesor || row.ASESOR || 'S/D';
+                    row.cuenta = row.cuenta || row.Cuenta || row.CUENTA || 'S/D';
+                });
+
+                sincronizarFiltrosCascada();
+                document.getElementById('fileStatus').innerHTML = `<span class="text-emerald-400">✅ ${rawData.length.toLocaleString('es-AR')} cuentas de SS/VL procesadas</span>`;
+                renderizarTabActual();
+            } else {
+                document.getElementById('fileStatus').innerText = "⚠️ Error de datos";
+                document.getElementById('tabContent').innerHTML = `
+                    <div class="card p-12 text-center text-rose-400 font-semibold border border-rose-500/20">
+                        No se encontró el archivo 'datos_cluster.js'. Asegurate de ejecutar el script de Python en esta misma carpeta primero.
+                    </div>`;
+            }
+        };
+
+        function sincronizarFiltrosCascada(origen = '') {
+            const selFA = document.getElementById('filtroFA');
+            const selNegocio = document.getElementById('filtroNegocio');
+
+            let faVal = selFA.value || "Todas";
+            let negVal = selNegocio.value || "Todas";
+
+            let poolForFA = rawData;
+            if (negVal !== "Todas") poolForFA = poolForFA.filter(r => r.negocio === negVal);
+            const fasDisponibles = [...new Set(poolForFA.map(r => r.FA).filter(Boolean))].sort();
+            
+            selFA.innerHTML = '<option value="Todas">Todas</option>' + fasDisponibles.map(f => `<option value="${f}">${f}</option>`).join('');
+            if (fasDisponibles.includes(faVal)) selFA.value = faVal;
+            else selFA.value = "Todas";
+
+            let poolForNeg = rawData;
+            if (selFA.value !== "Todas") poolForNeg = poolForNeg.filter(r => r.FA === selFA.value);
+            const negsDisponibles = [...new Set(poolForNeg.map(r => r.negocio).filter(Boolean))].sort();
+
+            selNegocio.innerHTML = '<option value="Todas">Todas</option>' + negsDisponibles.map(n => `<option value="${n}">${n}</option>`).join('');
+            if (negsDisponibles.includes(negVal)) selNegocio.value = negVal;
+            else selNegocio.value = "Todas";
+
+            let poolForAsesores = rawData;
+            if (selFA.value !== "Todas") poolForAsesores = poolForAsesores.filter(r => r.FA === selFA.value);
+            if (selNegocio.value !== "Todas") poolForAsesores = poolForAsesores.filter(r => r.negocio === selNegocio.value);
+
+            listaAsesoresVisibles = [...new Set(poolForAsesores.map(r => r.asesor).filter(Boolean))].sort();
+
+            if (origen === 'FA' || origen === 'Negocio' || origen === '') {
+                asesoresSeleccionados = new Set(listaAsesoresVisibles);
+            } else {
+                asesoresSeleccionados = new Set([...asesoresSeleccionados].filter(a => listaAsesoresVisibles.includes(a)));
+                if (asesoresSeleccionados.size === 0) asesoresSeleccionados = new Set(listaAsesoresVisibles);
+            }
+
+            construirCheckboxesAsesor(listaAsesoresVisibles);
+            actualizarLabelDropdownAsesor();
+        }
+
+        function alCambiarFiltro(tipo) {
+            sincronizarFiltrosCascada(tipo);
+            renderizarTabActual();
+        }
+
+        function construirCheckboxesAsesor(lista) {
+            const container = document.getElementById('listaAsesoresCheckboxes');
+            container.innerHTML = lista.map(asesor => {
+                const checked = asesoresSeleccionados.has(asesor) ? 'checked' : '';
+                return `
+                    <label class="flex items-center gap-2 hover:bg-slate-800/60 p-1 rounded cursor-pointer">
+                        <input type="checkbox" value="${asesor}" ${checked} class="accent-sky-500" onchange="alCambiarCheckboxAsesor(this)">
+                        <span class="truncate">${asesor}</span>
+                    </label>
+                `;
+            }).join('');
+        }
+
+        function toggleDropdownAsesor() {
+            document.getElementById('dropdownAsesorMenu').classList.toggle('hidden');
+        }
+
+        function cerrarDropdowns(e) {
+            const menu = document.getElementById('dropdownAsesorMenu');
+            if (menu && !menu.classList.contains('hidden')) menu.classList.add('hidden');
+        }
+
+        function filtrarListaAsesoresUI() {
+            const q = document.getElementById('buscarAsesorInput').value.toLowerCase();
+            const filtrados = listaAsesoresVisibles.filter(a => a.toLowerCase().includes(q));
+            construirCheckboxesAsesor(filtrados);
+        }
+
+        function alCambiarCheckboxAsesor(cb) {
+            if (cb.checked) asesoresSeleccionados.add(cb.value);
+            else asesoresSeleccionados.delete(cb.value);
+            actualizarLabelDropdownAsesor();
+            renderizarTabActual();
+        }
+
+        function seleccionarTodosAsesores(estado) {
+            if (estado) asesoresSeleccionados = new Set(listaAsesoresVisibles);
+            else asesoresSeleccionados.clear();
+            construirCheckboxesAsesor(listaAsesoresVisibles);
+            actualizarLabelDropdownAsesor();
+            renderizarTabActual();
+        }
+
+        function actualizarLabelDropdownAsesor() {
+            const label = document.getElementById('labelDropdownAsesor');
+            const total = listaAsesoresVisibles.length;
+            const selCount = asesoresSeleccionados.size;
+
+            if (selCount === total || selCount === 0) {
+                label.innerText = "Todas";
+            } else if (selCount === 1) {
+                label.innerText = Array.from(asesoresSeleccionados)[0];
+            } else {
+                label.innerText = `${selCount} seleccionados`;
+            }
+        }
+
+        function borrarFiltros() {
+            document.getElementById('filtroFA').value = "Todas";
+            document.getElementById('filtroNegocio').value = "Todas";
+            document.getElementById('filtroMoneda').value = "ARS";
+            sincronizarFiltrosCascada('');
+            renderizarTabActual();
+        }
+
+        function abrirModal(cuenta, comitente, asesor, fa, negocio, esActivo) {
+            document.getElementById('modalCuenta').innerText = cuenta || 'S/D';
+            document.getElementById('modalComitente').innerText = comitente || 'S/D';
+            document.getElementById('modalAsesor').innerText = asesor || 'S/D';
+            document.getElementById('modalFA').innerText = fa || 'S/D';
+            document.getElementById('modalNegocio').innerText = negocio || 'S/D';
+            document.getElementById('modalActivo').innerText = esActivo ? '🟢 Activo' : '🔴 Inactivo';
+            document.getElementById('modalCliente').classList.remove('hidden');
+        }
+
+        function cerrarModal() {
+            document.getElementById('modalCliente').classList.add('hidden');
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') cerrarModal();
+        });
+
+        function obtenerDatosFiltrados() {
+            const fFA = document.getElementById('filtroFA').value;
+            const fNegocio = document.getElementById('filtroNegocio').value;
+            const todosAsesores = (asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length);
+
+            return rawData.filter(row => {
+                if (fFA !== "Todas" && row.FA !== fFA) return false;
+                if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return false;
+                if (fNegocio !== "Todas" && row.negocio !== fNegocio) return false;
+                return true;
+            });
+        }
+
+        function fmt(num) {
+            return Number(num || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function formatAbrev(val, prefix="$") {
+            const num = Number(val || 0);
+            if (Math.abs(num) >= 1000000) {
+                return `${prefix}${(num / 1000000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M`;
+            } else if (Math.abs(num) >= 1000) {
+                return `${prefix}${(num / 1000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}k`;
+            }
+            return `${prefix}${num.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function agruparTop15(items) {
+            const total = items.reduce((acc, x) => acc + x.val, 0);
+            if (total <= 0 || items.length <= 15) return items;
+
+            const top15 = items.slice(0, 15);
+            const sumTop15 = top15.reduce((acc, x) => acc + x.val, 0);
+            const restoVal = total - sumTop15;
+
+            if (restoVal > 0.01) {
+                top15.push({ label: "Otros", val: restoVal });
+            }
+            return top15;
+        }
+
+        function renderizarTabActual() {
+            if (rawData.length === 0) return;
+
+            let data = obtenerDatosFiltrados();
+            const container = document.getElementById('tabContent');
+
+            const mapAUMTotalPorAsesor = {};
+            data.forEach(r => {
+                const as = r.asesor || "S/D";
+                mapAUMTotalPorAsesor[as] = (mapAUMTotalPorAsesor[as] || 0) + r.AUM;
+            });
+
+            if (tabActual === 'aum') {
+                const totalAUMUniverso = data.reduce((acc, r) => acc + r.AUM, 0);
+
+                container.innerHTML = `
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        <div class="lg:col-span-5 space-y-6">
+                            <div class="card p-5 rounded-2xl">
+                                <div class="flex justify-between items-center mb-2">
+                                    <h3 class="text-sm font-bold text-white">AUM en USD por asesor</h3>
+                                </div>
+                                <div class="overflow-y-auto max-h-72 pr-2">
+                                    <div id="wrapperChartAUM">
+                                        <canvas id="chartAUM"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card p-5 rounded-2xl">
+                                <div class="flex justify-between items-center mb-2">
+                                    <h3 class="text-sm font-bold text-white">Cantidad de cuentas por asesor</h3>
+                                    <span class="text-[10px] text-slate-400">🔵 Activo | 🟠 Inactivo</span>
+                                </div>
+                                <div class="overflow-y-auto max-h-72 pr-2">
+                                    <div id="wrapperChartCuentas">
+                                        <canvas id="chartCuentas"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="lg:col-span-7 card p-5 rounded-2xl flex flex-col justify-between">
+                            <div>
+                                <div class="flex justify-between items-center mb-3">
+                                    <h3 class="text-sm font-bold text-white">TOP clientes por AUM en USD (> USD 400k)</h3>
+                                    <span class="text-xs text-sky-400 font-semibold bg-sky-950/60 px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
+                                </div>
+                                <div class="overflow-y-auto max-h-[520px]">
+                                    <table class="w-full text-xs text-left text-slate-300">
+                                        <thead class="bg-slate-900 text-slate-400 uppercase sticky top-0">
+                                            <tr>
+                                                <th class="p-2.5">Cuenta</th>
+                                                <th class="p-2.5">Asesor</th>
+                                                <th class="p-2.5 text-right">Suma de AUM</th>
+                                                <th class="p-2.5 text-right">% del Total</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="tablaAUM" class="divide-y divide-slate-800"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="pt-4 mt-2 border-t border-slate-800 flex justify-between font-bold text-sm text-white">
+                                <span>Total Universo AUM</span>
+                                <div class="text-right">
+                                    <span class="text-blue-400" id="totalAUMDisplay">USD 0,00</span>
+                                    <span class="text-xs text-slate-400 block font-normal">(100% Universo Seleccionado)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                const clientes400k = data.filter(r => r.AUM > 400000).sort((a, b) => b.AUM - a.AUM);
+                document.getElementById('tablaAUM').innerHTML = clientes400k.map(r => {
+                    const pct = totalAUMUniverso > 0 ? ((r.AUM / totalAUMUniverso) * 100).toFixed(2) : '0.00';
+                    return `
+                        <tr class="hover:bg-slate-800/60 cursor-pointer select-none transition-colors" 
+                            ondblclick="abrirModal('${(r.cuenta || '').replace(/'/g, "\'")}', '${r.comitenteNumero}', '${(r.asesor || '').replace(/'/g, "\'")}', '${r.FA}', '${r.negocio}', ${r.esActivo})">
+                            <td class="p-2.5 font-medium text-slate-200">${r.cuenta || 'S/D'}</td>
+                            <td class="p-2.5 text-slate-400">${r.asesor || 'S/D'}</td>
+                            <td class="p-2.5 text-right font-bold text-white">USD ${fmt(r.AUM)}</td>
+                            <td class="p-2.5 text-right font-semibold text-sky-400">${pct}%</td>
+                        </tr>
+                    `;
+                }).join('');
+
+                document.getElementById('totalAUMDisplay').innerText = "USD " + fmt(totalAUMUniverso);
+
+                const mapAsesor = {};
+                data.forEach(r => {
+                    const as = r.asesor || "S/D";
+                    if (!mapAsesor[as]) {
+                        mapAsesor[as] = { aumTotal: 0, ctasActivas: 0, ctasInactivas: 0, ctasTotal: 0 };
+                    }
+                    mapAsesor[as].aumTotal += r.AUM;
+                    if (r.esActivo) {
+                        mapAsesor[as].ctasActivas += 1;
+                    } else {
+                        mapAsesor[as].ctasInactivas += 1;
+                    }
+                    mapAsesor[as].ctasTotal += 1;
+                });
+
+                const listaPorAUM = Object.keys(mapAsesor)
+                    .map(k => ({ asesor: k, ...mapAsesor[k] }))
+                    .sort((a, b) => b.aumTotal - a.aumTotal);
+
+                const listaPorCuentas = Object.keys(mapAsesor)
+                    .map(k => ({ asesor: k, ...mapAsesor[k] }))
+                    .sort((a, b) => b.ctasTotal - a.ctasTotal);
+
+                const alturaAUM = Math.max(280, listaPorAUM.length * 30);
+                const alturaCuentas = Math.max(280, listaPorCuentas.length * 30);
+                document.getElementById('wrapperChartAUM').style.height = `${alturaAUM}px`;
+                document.getElementById('wrapperChartCuentas').style.height = `${alturaCuentas}px`;
+
+                if (chartAUMInstance) chartAUMInstance.destroy();
+                chartAUMInstance = new Chart(document.getElementById('chartAUM'), {
+                    type: 'bar',
+                    data: {
+                        labels: listaPorAUM.map(x => x.asesor),
+                        datasets: [
+                            {
+                                label: 'AUM en USD',
+                                data: listaPorAUM.map(x => x.aumTotal),
+                                backgroundColor: '#0284c7',
+                                borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { right: 85 } },
+                        scales: {
+                            x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                            y: { ticks: { color: '#cbd5e1', font: { size: 11 } }, grid: { display: false } }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            datalabels: {
+                                anchor: 'end',
+                                align: 'end',
+                                color: '#ffffff',
+                                font: { weight: 'bold', size: 10 },
+                                formatter: (value) => formatAbrev(value, 'USD ')
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return ` AUM: USD ${fmt(context.raw)}`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                if (chartCuentasInstance) chartCuentasInstance.destroy();
+                chartCuentasInstance = new Chart(document.getElementById('chartCuentas'), {
+                    type: 'bar',
+                    data: {
+                        labels: listaPorCuentas.map(x => x.asesor),
+                        datasets: [
+                            {
+                                label: 'Cuentas Activas',
+                                data: listaPorCuentas.map(x => x.ctasActivas),
+                                backgroundColor: '#0ea5e9',
+                                borderRadius: 4
+                            },
+                            {
+                                label: 'Cuentas Inactivas',
+                                data: listaPorCuentas.map(x => x.ctasInactivas),
+                                backgroundColor: '#fb7185',
+                                borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { right: 85 } },
+                        scales: {
+                            x: { stacked: true, ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                            y: { stacked: true, ticks: { color: '#cbd5e1', font: { size: 11 } }, grid: { display: false } }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            datalabels: {
+                                display: (context) => context.datasetIndex === 1,
+                                anchor: 'end',
+                                align: 'end',
+                                color: '#ffffff',
+                                font: { weight: 'bold', size: 10 },
+                                formatter: (value, context) => {
+                                    const total = listaPorCuentas[context.dataIndex].ctasTotal;
+                                    const pctAct = total > 0 ? ((listaPorCuentas[context.dataIndex].ctasActivas / total) * 100).toFixed(0) : 0;
+                                    return `${total.toLocaleString('es-AR')} (${pctAct}% act)`;
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    afterBody: function(items) {
+                                        const idx = items[0].dataIndex;
+                                        const row = listaPorCuentas[idx];
+                                        const pct = row.ctasTotal > 0 ? ((row.ctasActivas / row.ctasTotal) * 100).toFixed(1) : 0;
+                                        return `Total: ${row.ctasTotal.toLocaleString('es-AR')}
+Activas: ${pct}%
+Inactivas: ${(100 - pct).toFixed(1)}%`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+            } else {
+                // SOLAPA LIQUIDEZ
+                const monedaSel = document.getElementById('filtroMoneda').value;
+                let colTarget = 'ARS_CI';
+                let labelHeader = '$ en CI';
+                let titleLeft = 'Liquidez en ARS por cliente';
+                let prefixMoneda = '$';
+                let colExtra = '';
+
+                if (monedaSel === 'ARS') {
+                    colTarget = 'ARS_CI';
+                    labelHeader = '$ en CI';
+                    titleLeft = 'Liquidez en ARS por cliente';
+                    prefixMoneda = '$';
+                } else if (monedaSel === 'MEP') {
+                    colTarget = 'MEP_CI';
+                    labelHeader = 'MEP CI';
+                    titleLeft = 'Liquidez en MEP por cliente';
+                    prefixMoneda = 'USD';
+                    colExtra = '<th class="p-2.5 text-right">MEP Bendecidos</th>';
+                } else if (monedaSel === 'Cable_CV7000') {
+                    colTarget = 'CABLE_CV7000';
+                    labelHeader = 'Cable + CV7000';
+                    titleLeft = 'Liquidez en Cable + CV7000 por cliente';
+                    prefixMoneda = 'USD';
+                }
+
+                const totalLiquidezUniverso = data.reduce((acc, r) => acc + r[colTarget], 0);
+
+                const fFA = document.getElementById('filtroFA').value;
+                const tieneFiltroAsesor = (asesoresSeleccionados.size > 0 && asesoresSeleccionados.size < listaAsesoresVisibles.length);
+
+                let nivelPie = "FA";
+                let tituloPie = `Distribución de Liquidez por FA`;
+
+                if (tieneFiltroAsesor) {
+                    nivelPie = "Cliente";
+                    tituloPie = `Distribución por Cliente (Top 15)`;
+                } else if (fFA !== "Todas") {
+                    nivelPie = "Asesor";
+                    tituloPie = `Distribución por Asesor - ${fFA} (Top 15)`;
+                }
+
+                container.innerHTML = `
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        <div class="lg:col-span-7 card p-5 rounded-2xl flex flex-col justify-between">
+                            <div>
+                                <div class="flex justify-between items-center mb-3">
+                                    <h3 class="text-sm font-bold text-white">${titleLeft}</h3>
+                                    <span class="text-xs text-sky-400 font-semibold bg-sky-950/60 px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
+                                </div>
+                                <div class="overflow-y-auto max-h-[520px]">
+                                    <table class="w-full text-xs text-left text-slate-300">
+                                        <thead class="bg-slate-900 text-slate-400 uppercase sticky top-0">
+                                            <tr>
+                                                <th class="p-2.5">Cuenta</th>
+                                                <th class="p-2.5">Asesor</th>
+                                                <th class="p-2.5 text-right">${labelHeader}</th>
+                                                ${colExtra}
+                                                <th class="p-2.5 text-right">% del Total</th>
+                                                <th class="p-2.5 text-right text-sky-300" title="Relatividad entre la liquidez del cliente y el AUM total del asesor">Liq / AUM Asesor</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="tablaLiq" class="divide-y divide-slate-800"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="pt-4 mt-2 border-t border-slate-800 flex justify-between font-bold text-sm text-white">
+                                <span>Total Universo Liquidez</span>
+                                <div class="text-right">
+                                    <span class="text-emerald-400" id="totalLiqDisplay">$0,00</span>
+                                    <span class="text-xs text-slate-400 block font-normal">(100% Universo Seleccionado)</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="lg:col-span-5 card p-5 rounded-2xl flex flex-col justify-between">
+                            <h3 class="text-sm font-bold text-white mb-2 self-start">${tituloPie}</h3>
+                            <div class="h-80 w-full flex justify-center items-center">
+                                <canvas id="chartPieFA"></canvas>
+                            </div>
+                            <div class="text-[11px] text-slate-400 text-center mt-2">
+                                Posicioná el cursor sobre los segmentos para ver el importe y porcentaje
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                const sortedLiq = [...data].sort((a, b) => b[colTarget] - a[colTarget]);
+                document.getElementById('tablaLiq').innerHTML = sortedLiq.slice(0, 60).map(r => {
+                    const pct = totalLiquidezUniverso > 0 ? ((r[colTarget] / totalLiquidezUniverso) * 100).toFixed(2) : '0.00';
+                    
+                    const aumAsesor = mapAUMTotalPorAsesor[r.asesor] || 0;
+                    let pctLiqVsAUM = "0.00";
+                    if (aumAsesor > 0) {
+                        if (monedaSel === 'ARS') {
+                            const liqEnUSD = r[colTarget] / (r.TC_MEP || 1540.0);
+                            pctLiqVsAUM = ((liqEnUSD / aumAsesor) * 100).toFixed(2);
+                        } else {
+                            pctLiqVsAUM = ((r[colTarget] / aumAsesor) * 100).toFixed(2);
+                        }
+                    }
+
+                    return `
+                        <tr class="hover:bg-slate-800/60 cursor-pointer select-none transition-colors"
+                            ondblclick="abrirModal('${(r.cuenta || '').replace(/'/g, "\'")}', '${r.comitenteNumero}', '${(r.asesor || '').replace(/'/g, "\'")}', '${r.FA}', '${r.negocio}', ${r.esActivo})">
+                            <td class="p-2.5 font-medium text-slate-200">${r.cuenta || 'S/D'}</td>
+                            <td class="p-2.5 text-slate-400">${r.asesor || 'S/D'}</td>
+                            <td class="p-2.5 text-right font-bold text-white">${prefixMoneda} ${fmt(r[colTarget])}</td>
+                            ${monedaSel === 'MEP' ? `<td class="p-2.5 text-right text-slate-400 font-medium">${prefixMoneda} ${fmt(r.MEP_BEND)}</td>` : ''}
+                            <td class="p-2.5 text-right font-semibold text-emerald-400">${pct}%</td>
+                            <td class="p-2.5 text-right font-semibold text-sky-400" title="AUM Asesor: USD ${fmt(aumAsesor)}">${pctLiqVsAUM}%</td>
+                        </tr>
+                    `;
+                }).join('');
+
+                document.getElementById('totalLiqDisplay').innerText = `${prefixMoneda} ${fmt(totalLiquidezUniverso)}`;
+
+                const mapPie = {};
+                data.forEach(r => {
+                    let key = "Otro";
+                    if (nivelPie === "FA") key = r.FA || "Otro";
+                    else if (nivelPie === "Asesor") key = r.asesor || "Otro";
+                    else if (nivelPie === "Cliente") key = r.cuenta || "Otro";
+
+                    const val = r[colTarget] || 0;
+                    if (val > 0) {
+                        mapPie[key] = (mapPie[key] || 0) + val;
+                    }
+                });
+
+                let rawEntries = Object.keys(mapPie).map(k => ({ label: k, val: mapPie[k] })).sort((a, b) => b.val - a.val);
+                let entriesPie = rawEntries;
+                if (nivelPie !== "FA") {
+                    entriesPie = agruparTop15(rawEntries);
+                }
+
+                const labelsPie = entriesPie.map(x => x.label);
+                const valuesPie = entriesPie.map(x => x.val);
+
+                const paletaColores = [
+                    '#800000', '#ea580c', '#0284c7', '#1e3a8a', '#d97706', 
+                    '#9333ea', '#10b981', '#06b6d4', '#f43f5e', '#8b5cf6', 
+                    '#eab308', '#14b8a6', '#6366f1', '#ec4899', '#0d9488', '#64748b'
+                ];
+
+                if (chartPieInstance) chartPieInstance.destroy();
+                chartPieInstance = new Chart(document.getElementById('chartPieFA'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: labelsPie,
+                        datasets: [{
+                            data: valuesPie,
+                            backgroundColor: paletaColores.slice(0, valuesPie.length)
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            datalabels: { display: false },
+                            legend: {
+                                position: 'right',
+                                labels: {
+                                    color: '#cbd5e1',
+                                    boxWidth: 10,
+                                    font: { size: 10 }
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const rawVal = context.raw || 0;
+                                        const pct = totalLiquidezUniverso > 0 ? ((rawVal / totalLiquidezUniverso) * 100).toFixed(1) : 0;
+                                        return ` ${context.label}: ${formatAbrev(rawVal, prefixMoneda === '$' ? '$' : 'USD ')} (${pct}%)`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    </script>
+</body>
+</html>
