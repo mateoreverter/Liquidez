@@ -70,9 +70,12 @@
             <h1 class="text-xl md:text-2xl font-bold text-white tracking-wide">📊 Monitor de AUM y Liquidez Multimoneda</h1>
             <p class="text-xs text-slate-400 mt-1">Control operativo unificado de saldos CI, AUM y distribución por FA / Asesor</p>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center justify-center md:justify-end gap-2">
             <div id="fileStatus" class="bg-slate-900 border border-slate-700 px-4 py-2.5 rounded-xl text-xs text-amber-400 font-medium flex items-center gap-2 shadow-inner">
                 Buscando datos locales...
+            </div>
+            <div id="lastUpdateStatus" class="bg-slate-900 border border-slate-700 px-4 py-2.5 rounded-xl text-xs text-slate-400 font-medium shadow-inner whitespace-nowrap">
+                🕒 Consultando actualización...
             </div>
         </div>
     </header>
@@ -186,6 +189,35 @@
             }).format(fecha);
         }
 
+        function mostrarFechaActualizacion(fecha) {
+            const fechaFormateada = formatearFechaActualizacion(fecha);
+            document.getElementById('lastUpdateStatus').innerHTML = fechaFormateada
+                ? `<span class="text-sky-300">🕒 Actualizado: ${fechaFormateada}</span>`
+                : '<span class="text-slate-500">🕒 Actualización no disponible</span>';
+        }
+
+        async function cargarFechaPublicacion() {
+            const fechaRespaldo = (typeof fechaActualizacionCluster !== 'undefined')
+                ? fechaActualizacionCluster
+                : '';
+
+            mostrarFechaActualizacion(fechaRespaldo);
+
+            try {
+                const respuesta = await fetch('datos_cluster.js', {
+                    method: 'HEAD',
+                    cache: 'no-store'
+                });
+                const ultimaModificacion = respuesta.headers.get('last-modified');
+
+                if (respuesta.ok && ultimaModificacion) {
+                    mostrarFechaActualizacion(ultimaModificacion);
+                }
+            } catch (error) {
+                // Si Vercel no informa Last-Modified, se mantiene la fecha embebida.
+            }
+        }
+
         // CARGA AUTOMÁTICA AL ABRIR EL HTML
         window.onload = () => {
             if (typeof datosCluster !== 'undefined') {
@@ -219,20 +251,12 @@
                 });
 
                 sincronizarFiltrosCascada();
-                const fechaProcesada = (typeof fechaActualizacionCluster !== 'undefined')
-                    ? formatearFechaActualizacion(fechaActualizacionCluster)
-                    : '';
-                const textoFecha = fechaProcesada
-                    ? `<span class="text-slate-400 whitespace-nowrap">Actualizado: ${fechaProcesada}</span>`
-                    : '';
-
-                document.getElementById('fileStatus').innerHTML = `
-                    <span class="text-emerald-400 whitespace-nowrap">✅ ${rawData.length.toLocaleString('es-AR')} cuentas de SS/VL procesadas</span>
-                    ${textoFecha ? '<span class="text-slate-600">•</span>' + textoFecha : ''}
-                `;
+                document.getElementById('fileStatus').innerHTML = `<span class="text-emerald-400 whitespace-nowrap">✅ ${rawData.length.toLocaleString('es-AR')} cuentas de SS/VL procesadas</span>`;
+                cargarFechaPublicacion();
                 renderizarTabActual();
             } else {
                 document.getElementById('fileStatus').innerText = "⚠️ Error de datos";
+                mostrarFechaActualizacion('');
                 document.getElementById('tabContent').innerHTML = `
                     <div class="card p-12 text-center text-rose-400 font-semibold border border-rose-500/20">
                         No se encontró el archivo 'datos_cluster.js'. Asegurate de ejecutar el script de Python en esta misma carpeta primero.
