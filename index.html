@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monitor de AUM y Liquidez Multimoneda</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='3' y='3' width='58' height='58' rx='15' fill='%230f172a' stroke='%2338bdf8' stroke-width='4'/%3E%3Ctext x='32' y='45' text-anchor='middle' font-family='Arial,sans-serif' font-size='42' font-weight='700' fill='%2338bdf8'%3E%24%3C/text%3E%3C/svg%3E">
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Chart.js -->
@@ -12,6 +13,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <!-- ARCHIVO DE DATOS LOCAL -->
     <script src="datos_cluster.js"></script>
+    <script src="historial_liquidez.js"></script>
     <style>
         body { background-color: #0b111e; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
         .card { background-color: #131b2e; border: 1px solid #1e293b; }
@@ -84,6 +86,7 @@
     <nav class="flex overflow-x-auto border-b border-slate-800 gap-6 text-sm font-medium">
         <button class="pb-3 px-2 tab-btn tab-active" onclick="seleccionarTab('aum', this)">1. AUM y Cuentas</button>
         <button class="pb-3 px-2 tab-btn tab-inactive" onclick="seleccionarTab('liquidez', this)">2. Liquidez</button>
+        <button class="pb-3 px-2 tab-btn tab-inactive" onclick="seleccionarTab('descubiertos', this)">3. Saldos descubiertos</button>
     </nav>
 
     <!-- BARRA DE FILTROS EN CASCADA -->
@@ -130,6 +133,20 @@
                     <option value="Todas">Todas</option>
                 </select>
             </div>
+
+            <div id="filtroClienteBox" class="relative items-center gap-2" style="display: none;" onclick="event.stopPropagation()">
+                <label class="text-slate-400">Cliente:</label>
+                <button type="button" id="btnDropdownCliente" onclick="toggleDropdownCliente()" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1 text-white text-left min-w-[180px] max-w-[280px] truncate flex justify-between items-center gap-2">
+                    <span id="labelDropdownCliente" class="truncate">Todos</span>
+                    <span class="text-[10px] text-slate-400">▼</span>
+                </button>
+
+                <div id="dropdownClienteMenu" class="hidden absolute top-full left-14 mt-1 w-80 max-w-[calc(100vw-3rem)] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-2 z-40 space-y-2">
+                    <input type="text" id="buscarClienteInput" placeholder="Buscar por nombre o comitente..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-sky-600" oninput="filtrarListaClientesUI()">
+                    <div id="listaClientesOpciones" class="max-h-56 overflow-y-auto space-y-1 pr-1 text-slate-300 text-xs"></div>
+                    <p id="avisoClientes" class="text-[10px] text-slate-500 px-1"></p>
+                </div>
+            </div>
         </div>
 
         <button onclick="borrarFiltros()" class="bg-rose-950/40 hover:bg-rose-900/60 border border-rose-700/50 text-rose-300 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition">
@@ -152,8 +169,15 @@
         let chartAUMInstance = null;
         let chartCuentasInstance = null;
         let chartPieInstance = null;
+        let chartEvolucionInstance = null;
+        let rawHistory = [];
+        let monedaEvolucionSeleccionada = 'ARS';
         let asesoresSeleccionados = new Set();
         let listaAsesoresVisibles = [];
+        let historialFechas = [];
+        let historialEsPorCliente = false;
+        let clienteSeleccionadoId = '';
+        let listaClientesVisibles = [];
 
         function seleccionarTab(tab, element) {
             document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -163,7 +187,22 @@
             tabActual = tab;
 
             const boxMoneda = document.getElementById('filtroMonedaBox');
-            boxMoneda.style.display = (tab === 'liquidez') ? 'flex' : 'none';
+            const boxCliente = document.getElementById('filtroClienteBox');
+            const esSaldos = tab === 'liquidez' || tab === 'descubiertos';
+            boxMoneda.style.display = esSaldos ? 'flex' : 'none';
+            boxCliente.style.display = esSaldos ? 'flex' : 'none';
+
+            const opcionCable = document.querySelector('#filtroMoneda option[value="Cable_CV7000"]');
+            if (opcionCable) {
+                opcionCable.textContent = tab === 'descubiertos'
+                    ? 'Cable (Disponibles CI)'
+                    : 'Cable + CV7000';
+            }
+            renderizarTabActual();
+        }
+
+        function cambiarMonedaEvolucion(moneda) {
+            monedaEvolucionSeleccionada = moneda;
             renderizarTabActual();
         }
 
@@ -218,10 +257,38 @@
             }
         }
 
+        function normalizarHistorial(datos) {
+            historialFechas = [];
+            historialEsPorCliente = false;
+
+            if (datos && !Array.isArray(datos) && Array.isArray(datos.fechas) && Array.isArray(datos.clientes)) {
+                historialFechas = datos.fechas.map(String);
+                historialEsPorCliente = true;
+                return datos.clientes.map(cliente => ({
+                    clienteId: String(cliente[0] ?? ''),
+                    cuenta: cliente[1] || 'S/D',
+                    comitente: cliente[2] || 'S/D',
+                    fa: cliente[3] || 'Otro',
+                    asesor: cliente[4] || 'S/D',
+                    negocio: cliente[5] || 'S/D',
+                    ars: Array.isArray(cliente[6]) ? cliente[6].map(Number) : [],
+                    mep: Array.isArray(cliente[7]) ? cliente[7].map(Number) : [],
+                    cable: Array.isArray(cliente[8]) ? cliente[8].map(Number) : []
+                }));
+            }
+
+            const historialAnterior = Array.isArray(datos) ? datos : [];
+            historialFechas = [...new Set(historialAnterior.map(row => String(row.fecha || '')).filter(Boolean))].sort();
+            return historialAnterior;
+        }
+
         // CARGA AUTOMÁTICA AL ABRIR EL HTML
         window.onload = () => {
             if (typeof datosCluster !== 'undefined') {
                 rawData = datosCluster;
+                rawHistory = normalizarHistorial(
+                    (typeof historialLiquidez !== 'undefined') ? historialLiquidez : []
+                );
 
                 // Mapeo robusto: tolerante a mayúsculas y minúsculas generadas desde Pandas
                 rawData.forEach(row => {
@@ -248,6 +315,9 @@
 
                     row.asesor = row.asesor || row.Asesor || row.ASESOR || 'S/D';
                     row.cuenta = row.cuenta || row.Cuenta || row.CUENTA || 'S/D';
+                    row.clienteId = String(
+                        row.idcuenta || row.IdCuenta || row.IDCUENTA || row['id cuenta'] || row.id_cuenta || ''
+                    );
                 });
 
                 sincronizarFiltrosCascada();
@@ -302,6 +372,7 @@
 
             construirCheckboxesAsesor(listaAsesoresVisibles);
             actualizarLabelDropdownAsesor();
+            actualizarClientesVisibles();
         }
 
         function alCambiarFiltro(tipo) {
@@ -323,12 +394,15 @@
         }
 
         function toggleDropdownAsesor() {
+            document.getElementById('dropdownClienteMenu').classList.add('hidden');
             document.getElementById('dropdownAsesorMenu').classList.toggle('hidden');
         }
 
         function cerrarDropdowns(e) {
-            const menu = document.getElementById('dropdownAsesorMenu');
-            if (menu && !menu.classList.contains('hidden')) menu.classList.add('hidden');
+            const menuAsesor = document.getElementById('dropdownAsesorMenu');
+            const menuCliente = document.getElementById('dropdownClienteMenu');
+            if (menuAsesor && !menuAsesor.classList.contains('hidden')) menuAsesor.classList.add('hidden');
+            if (menuCliente && !menuCliente.classList.contains('hidden')) menuCliente.classList.add('hidden');
         }
 
         function filtrarListaAsesoresUI() {
@@ -341,6 +415,7 @@
             if (cb.checked) asesoresSeleccionados.add(cb.value);
             else asesoresSeleccionados.delete(cb.value);
             actualizarLabelDropdownAsesor();
+            actualizarClientesVisibles();
             renderizarTabActual();
         }
 
@@ -349,6 +424,7 @@
             else asesoresSeleccionados.clear();
             construirCheckboxesAsesor(listaAsesoresVisibles);
             actualizarLabelDropdownAsesor();
+            actualizarClientesVisibles();
             renderizarTabActual();
         }
 
@@ -366,10 +442,150 @@
             }
         }
 
+        function normalizarTextoBusqueda(texto) {
+            return String(texto || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .trim();
+        }
+
+        function actualizarClientesVisibles() {
+            const fFA = document.getElementById('filtroFA').value;
+            const fNegocio = document.getElementById('filtroNegocio').value;
+            const todosAsesores = asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length;
+            const clientesPorId = new Map();
+
+            rawData.forEach(row => {
+                if (fFA !== 'Todas' && row.FA !== fFA) return;
+                if (fNegocio !== 'Todas' && row.negocio !== fNegocio) return;
+                if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return;
+                if (!row.clienteId || clientesPorId.has(row.clienteId)) return;
+
+                clientesPorId.set(row.clienteId, {
+                    id: row.clienteId,
+                    cuenta: row.cuenta || 'S/D',
+                    comitente: row.comitenteNumero || 'S/D'
+                });
+            });
+
+            if (historialEsPorCliente) {
+                rawHistory.forEach(row => {
+                    if (fFA !== 'Todas' && row.fa !== fFA) return;
+                    if (fNegocio !== 'Todas' && row.negocio !== fNegocio) return;
+                    if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return;
+                    if (!row.clienteId || clientesPorId.has(row.clienteId)) return;
+
+                    clientesPorId.set(row.clienteId, {
+                        id: row.clienteId,
+                        cuenta: row.cuenta || 'S/D',
+                        comitente: row.comitente || 'S/D'
+                    });
+                });
+            }
+
+            listaClientesVisibles = [...clientesPorId.values()].sort((a, b) =>
+                a.cuenta.localeCompare(b.cuenta, 'es', { sensitivity: 'base' })
+            );
+
+            if (clienteSeleccionadoId && !clientesPorId.has(clienteSeleccionadoId)) {
+                clienteSeleccionadoId = '';
+            }
+
+            const buscador = document.getElementById('buscarClienteInput');
+            if (buscador) buscador.value = '';
+            construirListaClientesUI(listaClientesVisibles);
+            actualizarLabelDropdownCliente();
+        }
+
+        function construirListaClientesUI(lista) {
+            const container = document.getElementById('listaClientesOpciones');
+            const aviso = document.getElementById('avisoClientes');
+            if (!container || !aviso) return;
+
+            container.innerHTML = '';
+            const crearOpcion = (textoPrincipal, textoSecundario, id, seleccionada = false) => {
+                const boton = document.createElement('button');
+                boton.type = 'button';
+                boton.className = `w-full text-left rounded-lg px-2 py-1.5 hover:bg-slate-800/70 ${seleccionada ? 'bg-sky-950/70 text-sky-300' : 'text-slate-200'}`;
+                boton.addEventListener('click', () => seleccionarCliente(id));
+
+                const principal = document.createElement('span');
+                principal.className = 'block truncate font-medium';
+                principal.textContent = textoPrincipal;
+                boton.appendChild(principal);
+
+                if (textoSecundario) {
+                    const secundario = document.createElement('span');
+                    secundario.className = 'block truncate text-[10px] text-slate-500';
+                    secundario.textContent = textoSecundario;
+                    boton.appendChild(secundario);
+                }
+                container.appendChild(boton);
+            };
+
+            crearOpcion('Todos los clientes', '', '', clienteSeleccionadoId === '');
+            lista.slice(0, 100).forEach(cliente => {
+                crearOpcion(
+                    cliente.cuenta,
+                    `Comitente: ${cliente.comitente}`,
+                    cliente.id,
+                    cliente.id === clienteSeleccionadoId
+                );
+            });
+
+            if (lista.length > 100) {
+                aviso.textContent = `Mostrando 100 de ${lista.length.toLocaleString('es-AR')}. Escribí para afinar la búsqueda.`;
+            } else if (lista.length === 0) {
+                aviso.textContent = 'No se encontraron clientes con los filtros actuales.';
+            } else {
+                aviso.textContent = `${lista.length.toLocaleString('es-AR')} cliente${lista.length === 1 ? '' : 's'}.`;
+            }
+        }
+
+        function filtrarListaClientesUI() {
+            const consulta = normalizarTextoBusqueda(document.getElementById('buscarClienteInput').value);
+            const filtrados = consulta
+                ? listaClientesVisibles.filter(cliente =>
+                    normalizarTextoBusqueda(`${cliente.cuenta} ${cliente.comitente}`).includes(consulta)
+                )
+                : listaClientesVisibles;
+            construirListaClientesUI(filtrados);
+        }
+
+        function toggleDropdownCliente() {
+            const menu = document.getElementById('dropdownClienteMenu');
+            const seAbrira = menu.classList.contains('hidden');
+            document.getElementById('dropdownAsesorMenu').classList.add('hidden');
+            menu.classList.toggle('hidden');
+            if (seAbrira) {
+                filtrarListaClientesUI();
+                setTimeout(() => document.getElementById('buscarClienteInput').focus(), 0);
+            }
+        }
+
+        function seleccionarCliente(clienteId) {
+            clienteSeleccionadoId = String(clienteId || '');
+            document.getElementById('dropdownClienteMenu').classList.add('hidden');
+            document.getElementById('buscarClienteInput').value = '';
+            construirListaClientesUI(listaClientesVisibles);
+            actualizarLabelDropdownCliente();
+            renderizarTabActual();
+        }
+
+        function actualizarLabelDropdownCliente() {
+            const label = document.getElementById('labelDropdownCliente');
+            const cliente = listaClientesVisibles.find(item => item.id === clienteSeleccionadoId);
+            label.innerText = cliente ? cliente.cuenta : 'Todos';
+            label.title = cliente ? `${cliente.cuenta} — Comitente ${cliente.comitente}` : 'Todos los clientes';
+        }
+
         function borrarFiltros() {
             document.getElementById('filtroFA').value = "Todas";
             document.getElementById('filtroNegocio').value = "Todas";
             document.getElementById('filtroMoneda').value = "ARS";
+            monedaEvolucionSeleccionada = "ARS";
+            clienteSeleccionadoId = '';
             sincronizarFiltrosCascada('');
             renderizarTabActual();
         }
@@ -401,8 +617,60 @@
                 if (fFA !== "Todas" && row.FA !== fFA) return false;
                 if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return false;
                 if (fNegocio !== "Todas" && row.negocio !== fNegocio) return false;
+                if (tabActual !== 'aum' && clienteSeleccionadoId && row.clienteId !== clienteSeleccionadoId) return false;
                 return true;
             });
+        }
+
+        function obtenerHistorialFiltrado() {
+            const fFA = document.getElementById('filtroFA').value;
+            const fNegocio = document.getElementById('filtroNegocio').value;
+            const todosAsesores = (asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length);
+
+            return rawHistory.filter(row => {
+                if (fFA !== "Todas" && row.fa !== fFA) return false;
+                if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return false;
+                if (fNegocio !== "Todas" && row.negocio !== fNegocio) return false;
+                if (clienteSeleccionadoId) {
+                    if (!historialEsPorCliente || row.clienteId !== clienteSeleccionadoId) return false;
+                }
+                return true;
+            });
+        }
+
+        function obtenerPuntosEvolucion(moneda, soloNegativos = false) {
+            const historialFiltrado = obtenerHistorialFiltrado();
+
+            if (historialEsPorCliente) {
+                const propiedad = moneda === 'ARS' ? 'ars' : (moneda === 'MEP' ? 'mep' : 'cable');
+                return historialFechas.map((fecha, indice) => ({
+                    fecha,
+                    valor: historialFiltrado.reduce((total, row) => {
+                        const valor = Number(row[propiedad]?.[indice]) || 0;
+                        return total + (soloNegativos && valor >= 0 ? 0 : valor);
+                    }, 0)
+                }));
+            }
+
+            const columna = moneda === 'ARS' ? 'ars_ci' : (moneda === 'MEP' ? 'mep_ci' : 'cable_ci');
+            const evolucionPorFecha = {};
+            historialFiltrado.forEach(row => {
+                const fecha = String(row.fecha || '');
+                if (!fecha) return;
+                const valor = Number(row[columna]) || 0;
+                evolucionPorFecha[fecha] = (evolucionPorFecha[fecha] || 0)
+                    + (soloNegativos && valor >= 0 ? 0 : valor);
+            });
+
+            return Object.entries(evolucionPorFecha)
+                .map(([fecha, valor]) => ({ fecha, valor }))
+                .sort((a, b) => a.fecha.localeCompare(b.fecha));
+        }
+
+        function formatearFechaCorta(fechaISO) {
+            const partes = String(fechaISO || '').split('-');
+            if (partes.length !== 3) return fechaISO || '';
+            return `${partes[2]}/${partes[1]}/${partes[0]}`;
         }
 
         function fmt(num) {
@@ -411,12 +679,20 @@
 
         function formatAbrev(val, prefix="$") {
             const num = Number(val || 0);
-            if (Math.abs(num) >= 1000000) {
-                return `${prefix}${(num / 1000000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M`;
-            } else if (Math.abs(num) >= 1000) {
-                return `${prefix}${(num / 1000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}k`;
+            const signo = num < 0 ? '-' : '';
+            const absoluto = Math.abs(num);
+            if (absoluto >= 1000000) {
+                return `${signo}${prefix}${(absoluto / 1000000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M`;
+            } else if (absoluto >= 1000) {
+                return `${signo}${prefix}${(absoluto / 1000).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}k`;
             }
-            return `${prefix}${num.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            return `${signo}${prefix}${absoluto.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function formatearMontoFirmado(valor, prefijo) {
+            const numero = Number(valor || 0);
+            const signo = numero < 0 ? '-' : '';
+            return `${signo}${prefijo} ${fmt(Math.abs(numero))}`;
         }
 
         function agruparTop15(items) {
@@ -503,6 +779,7 @@
                             </div>
                         </div>
                     </div>
+
                 `;
 
                 const clientes400k = data.filter(r => r.AUM > 400000).sort((a, b) => b.AUM - a.AUM);
@@ -652,47 +929,81 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                 });
 
             } else {
-                // SOLAPA LIQUIDEZ
+                // SOLAPAS LIQUIDEZ Y SALDOS DESCUBIERTOS
+                const esDescubiertos = tabActual === 'descubiertos';
                 const monedaSel = document.getElementById('filtroMoneda').value;
                 let colTarget = 'ARS_CI';
                 let labelHeader = '$ en CI';
-                let titleLeft = 'Liquidez en ARS por cliente';
+                let titleLeft = esDescubiertos
+                    ? 'Saldos descubiertos en ARS por cliente'
+                    : 'Liquidez en ARS por cliente';
                 let prefixMoneda = '$';
                 let colExtra = '';
 
                 if (monedaSel === 'ARS') {
                     colTarget = 'ARS_CI';
                     labelHeader = '$ en CI';
-                    titleLeft = 'Liquidez en ARS por cliente';
+                    titleLeft = esDescubiertos
+                        ? 'Saldos descubiertos en ARS por cliente'
+                        : 'Liquidez en ARS por cliente';
                     prefixMoneda = '$';
                 } else if (monedaSel === 'MEP') {
                     colTarget = 'MEP_CI';
                     labelHeader = 'MEP CI';
-                    titleLeft = 'Liquidez en MEP por cliente';
+                    titleLeft = esDescubiertos
+                        ? 'Saldos descubiertos en MEP por cliente'
+                        : 'Liquidez en MEP por cliente';
                     prefixMoneda = 'USD';
                     colExtra = '<th class="p-2.5 text-right">MEP Bendecidos</th>';
                 } else if (monedaSel === 'Cable_CV7000') {
-                    colTarget = 'CABLE_CV7000';
-                    labelHeader = 'Cable + CV7000';
-                    titleLeft = 'Liquidez en Cable + CV7000 por cliente';
+                    colTarget = esDescubiertos ? 'CABLE_CI' : 'CABLE_CV7000';
+                    labelHeader = esDescubiertos ? 'Cable CI' : 'Cable + CV7000';
+                    titleLeft = esDescubiertos
+                        ? 'Saldos descubiertos en Cable por cliente'
+                        : 'Liquidez en Cable + CV7000 por cliente';
                     prefixMoneda = 'USD';
                 }
 
-                const totalLiquidezUniverso = data.reduce((acc, r) => acc + r[colTarget], 0);
+                if (esDescubiertos) {
+                    data = data.filter(r => Number(r[colTarget]) < 0);
+                }
+
+                const totalLiquidezUniverso = data.reduce(
+                    (acc, r) => acc + (esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget]),
+                    0
+                );
+                const totalMostrado = esDescubiertos
+                    ? data.reduce((acc, r) => acc + r[colTarget], 0)
+                    : totalLiquidezUniverso;
 
                 const fFA = document.getElementById('filtroFA').value;
                 const tieneFiltroAsesor = (asesoresSeleccionados.size > 0 && asesoresSeleccionados.size < listaAsesoresVisibles.length);
 
                 let nivelPie = "FA";
-                let tituloPie = `Distribución de Liquidez por FA`;
+                let tituloPie = esDescubiertos
+                    ? `Distribución de saldos descubiertos por FA`
+                    : `Distribución de Liquidez por FA`;
 
                 if (tieneFiltroAsesor) {
                     nivelPie = "Cliente";
-                    tituloPie = `Distribución por Cliente (Top 15)`;
+                    tituloPie = esDescubiertos
+                        ? `Distribución del descubierto por Cliente (Top 15)`
+                        : `Distribución por Cliente (Top 15)`;
                 } else if (fFA !== "Todas") {
                     nivelPie = "Asesor";
-                    tituloPie = `Distribución por Asesor - ${fFA} (Top 15)`;
+                    tituloPie = esDescubiertos
+                        ? `Distribución del descubierto por Asesor - ${fFA} (Top 15)`
+                        : `Distribución por Asesor - ${fFA} (Top 15)`;
                 }
+
+                const etiquetaPorcentaje = esDescubiertos ? '% del descubierto' : '% del Total';
+                const etiquetaRatio = esDescubiertos ? 'Desc. / AUM Asesor' : 'Liq / AUM Asesor';
+                const tituloTotal = esDescubiertos ? 'Total saldos descubiertos' : 'Total Universo Liquidez';
+                const claseImporte = esDescubiertos ? 'text-rose-400' : 'text-white';
+                const claseTotal = esDescubiertos ? 'text-rose-400' : 'text-emerald-400';
+                const claseAyuda = esDescubiertos
+                    ? 'text-rose-300 bg-rose-950/50'
+                    : 'text-sky-400 bg-sky-950/60';
 
                 container.innerHTML = `
                     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -700,7 +1011,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                             <div>
                                 <div class="flex justify-between items-center mb-3">
                                     <h3 class="text-sm font-bold text-white">${titleLeft}</h3>
-                                    <span class="text-xs text-sky-400 font-semibold bg-sky-950/60 px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
+                                    <span class="text-xs ${claseAyuda} font-semibold px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
                                 </div>
                                 <div class="overflow-y-auto max-h-[520px]">
                                     <table class="w-full text-xs text-left text-slate-300">
@@ -710,8 +1021,8 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                                 <th class="p-2.5">Asesor</th>
                                                 <th class="p-2.5 text-right">${labelHeader}</th>
                                                 ${colExtra}
-                                                <th class="p-2.5 text-right">% del Total</th>
-                                                <th class="p-2.5 text-right text-sky-300" title="Relatividad entre la liquidez del cliente y el AUM total del asesor">Liq / AUM Asesor</th>
+                                                <th class="p-2.5 text-right">${etiquetaPorcentaje}</th>
+                                                <th class="p-2.5 text-right ${esDescubiertos ? 'text-rose-300' : 'text-sky-300'}" title="Relatividad entre el saldo del cliente y el AUM total del asesor">${etiquetaRatio}</th>
                                             </tr>
                                         </thead>
                                         <tbody id="tablaLiq" class="divide-y divide-slate-800"></tbody>
@@ -719,10 +1030,10 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                 </div>
                             </div>
                             <div class="pt-4 mt-2 border-t border-slate-800 flex justify-between font-bold text-sm text-white">
-                                <span>Total Universo Liquidez</span>
+                                <span>${tituloTotal}</span>
                                 <div class="text-right">
-                                    <span class="text-emerald-400" id="totalLiqDisplay">$0,00</span>
-                                    <span class="text-xs text-slate-400 block font-normal">(100% Universo Seleccionado)</span>
+                                    <span class="${claseTotal}" id="totalLiqDisplay">$0,00</span>
+                                    <span class="text-xs text-slate-400 block font-normal">${esDescubiertos ? `(${data.length.toLocaleString('es-AR')} cuentas con saldo negativo)` : '(100% Universo Seleccionado)'}</span>
                                 </div>
                             </div>
                         </div>
@@ -737,20 +1048,48 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                             </div>
                         </div>
                     </div>
+
+                    <div class="card p-5 rounded-2xl">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                            <div>
+                                <h3 class="text-sm font-bold text-white" id="tituloEvolucionLiquidez">${esDescubiertos ? 'Evolución de saldos descubiertos' : 'Evolución de la liquidez'}</h3>
+                                <p class="text-[11px] text-slate-400 mt-1">Histórico diario según los filtros seleccionados</p>
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <div class="flex items-center gap-2">
+                                    <label for="filtroMonedaEvolucion" class="text-xs text-slate-400">Moneda:</label>
+                                    <select id="filtroMonedaEvolucion" class="bg-slate-900 border border-sky-500/50 rounded-lg px-2.5 py-1.5 text-xs text-sky-300 font-semibold focus:outline-none" onchange="cambiarMonedaEvolucion(this.value)">
+                                        <option value="ARS" ${monedaEvolucionSeleccionada === 'ARS' ? 'selected' : ''}>ARS</option>
+                                        <option value="MEP" ${monedaEvolucionSeleccionada === 'MEP' ? 'selected' : ''}>MEP</option>
+                                        <option value="Cable" ${monedaEvolucionSeleccionada === 'Cable' ? 'selected' : ''}>Cable</option>
+                                    </select>
+                                </div>
+                                <div id="ultimoDatoEvolucion" class="text-xs ${esDescubiertos ? 'text-rose-300' : 'text-sky-300'} font-semibold text-left sm:text-right"></div>
+                            </div>
+                        </div>
+                        <div class="h-72 w-full">
+                            <canvas id="chartEvolucionLiquidez"></canvas>
+                        </div>
+                    </div>
                 `;
 
-                const sortedLiq = [...data].sort((a, b) => b[colTarget] - a[colTarget]);
-                document.getElementById('tablaLiq').innerHTML = sortedLiq.slice(0, 60).map(r => {
-                    const pct = totalLiquidezUniverso > 0 ? ((r[colTarget] / totalLiquidezUniverso) * 100).toFixed(2) : '0.00';
+                const sortedLiq = [...data].sort((a, b) => esDescubiertos
+                    ? a[colTarget] - b[colTarget]
+                    : b[colTarget] - a[colTarget]
+                );
+                const filasTabla = sortedLiq.slice(0, 60).map(r => {
+                    const valorParticipacion = esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget];
+                    const pct = totalLiquidezUniverso > 0 ? ((valorParticipacion / totalLiquidezUniverso) * 100).toFixed(2) : '0.00';
                     
                     const aumAsesor = mapAUMTotalPorAsesor[r.asesor] || 0;
                     let pctLiqVsAUM = "0.00";
                     if (aumAsesor > 0) {
+                        const saldoParaRatio = esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget];
                         if (monedaSel === 'ARS') {
-                            const liqEnUSD = r[colTarget] / (r.TC_MEP || 1540.0);
+                            const liqEnUSD = saldoParaRatio / (r.TC_MEP || 1540.0);
                             pctLiqVsAUM = ((liqEnUSD / aumAsesor) * 100).toFixed(2);
                         } else {
-                            pctLiqVsAUM = ((r[colTarget] / aumAsesor) * 100).toFixed(2);
+                            pctLiqVsAUM = ((saldoParaRatio / aumAsesor) * 100).toFixed(2);
                         }
                     }
 
@@ -759,15 +1098,109 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                             ondblclick="abrirModal('${(r.cuenta || '').replace(/'/g, "\'")}', '${r.comitenteNumero}', '${(r.asesor || '').replace(/'/g, "\'")}', '${r.FA}', '${r.negocio}', ${r.esActivo})">
                             <td class="p-2.5 font-medium text-slate-200">${r.cuenta || 'S/D'}</td>
                             <td class="p-2.5 text-slate-400">${r.asesor || 'S/D'}</td>
-                            <td class="p-2.5 text-right font-bold text-white">${prefixMoneda} ${fmt(r[colTarget])}</td>
+                            <td class="p-2.5 text-right font-bold ${claseImporte}">${formatearMontoFirmado(r[colTarget], prefixMoneda)}</td>
                             ${monedaSel === 'MEP' ? `<td class="p-2.5 text-right text-slate-400 font-medium">${prefixMoneda} ${fmt(r.MEP_BEND)}</td>` : ''}
-                            <td class="p-2.5 text-right font-semibold text-emerald-400">${pct}%</td>
-                            <td class="p-2.5 text-right font-semibold text-sky-400" title="AUM Asesor: USD ${fmt(aumAsesor)}">${pctLiqVsAUM}%</td>
+                            <td class="p-2.5 text-right font-semibold ${esDescubiertos ? 'text-rose-300' : 'text-emerald-400'}">${pct}%</td>
+                            <td class="p-2.5 text-right font-semibold ${esDescubiertos ? 'text-rose-400' : 'text-sky-400'}" title="AUM Asesor: USD ${fmt(aumAsesor)}">${pctLiqVsAUM}%</td>
                         </tr>
                     `;
                 }).join('');
 
-                document.getElementById('totalLiqDisplay').innerText = `${prefixMoneda} ${fmt(totalLiquidezUniverso)}`;
+                document.getElementById('tablaLiq').innerHTML = filasTabla || `
+                    <tr>
+                        <td colspan="${monedaSel === 'MEP' ? 7 : 6}" class="p-8 text-center text-slate-500">
+                            ${esDescubiertos ? 'No hay saldos negativos con los filtros seleccionados.' : 'No hay saldos con los filtros seleccionados.'}
+                        </td>
+                    </tr>`;
+
+                document.getElementById('totalLiqDisplay').innerText = formatearMontoFirmado(totalMostrado, prefixMoneda);
+
+                const etiquetaHistorica = monedaEvolucionSeleccionada === 'ARS'
+                    ? (esDescubiertos
+                        ? 'Saldos descubiertos en ARS ($ Disponibles CI)'
+                        : 'Liquidez en ARS ($ Disponibles CI)')
+                    : (monedaEvolucionSeleccionada === 'MEP'
+                        ? (esDescubiertos
+                            ? 'Saldos descubiertos en USD MEP (MEP Disponibles CI)'
+                            : 'Liquidez en USD MEP (MEP Disponibles CI)')
+                        : (esDescubiertos
+                            ? 'Saldos descubiertos en USD Cable (Cable Disponibles CI)'
+                            : 'Liquidez en USD Cable (Cable Disponibles CI)'));
+                const prefijoHistorico = monedaEvolucionSeleccionada === 'ARS' ? '$' : 'USD ';
+                const puntosEvolucion = obtenerPuntosEvolucion(monedaEvolucionSeleccionada, esDescubiertos);
+
+                const tituloHistorico = etiquetaHistorica.charAt(0).toLowerCase() + etiquetaHistorica.slice(1);
+                const clienteHistorico = listaClientesVisibles.find(cliente => cliente.id === clienteSeleccionadoId);
+                document.getElementById('tituloEvolucionLiquidez').innerText = clienteHistorico
+                    ? `Evolución de ${tituloHistorico} — ${clienteHistorico.cuenta}`
+                    : `Evolución de ${tituloHistorico}`;
+                const ultimoPunto = puntosEvolucion[puntosEvolucion.length - 1];
+                document.getElementById('ultimoDatoEvolucion').innerHTML = ultimoPunto
+                    ? `<span class="text-slate-400 font-normal">Último registro (${formatearFechaCorta(ultimoPunto.fecha)}):</span><br>${formatAbrev(ultimoPunto.valor, prefijoHistorico)}`
+                    : '<span class="text-slate-500">Sin información histórica</span>';
+
+                if (chartEvolucionInstance) chartEvolucionInstance.destroy();
+                chartEvolucionInstance = new Chart(document.getElementById('chartEvolucionLiquidez'), {
+                    type: 'line',
+                    data: {
+                        labels: puntosEvolucion.map(x => formatearFechaCorta(x.fecha)),
+                        datasets: [{
+                            label: etiquetaHistorica,
+                            data: puntosEvolucion.map(x => x.valor),
+                            borderColor: esDescubiertos ? '#fb7185' : '#38bdf8',
+                            backgroundColor: esDescubiertos ? 'rgba(251, 113, 133, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+                            pointBackgroundColor: esDescubiertos ? '#fb7185' : '#38bdf8',
+                            pointBorderColor: esDescubiertos ? '#ffe4e6' : '#e0f2fe',
+                            pointRadius: 4,
+                            pointHoverRadius: 6,
+                            borderWidth: 2.5,
+                            tension: 0.25,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: {
+                            padding: { top: 22, right: 12, left: 6 }
+                        },
+                        interaction: { intersect: false, mode: 'index' },
+                        scales: {
+                            x: {
+                                ticks: { color: '#94a3b8' },
+                                grid: { color: '#1e293b' }
+                            },
+                            y: {
+                                beginAtZero: puntosEvolucion.every(punto => punto.valor === 0),
+                                reverse: esDescubiertos,
+                                grace: '12%',
+                                ticks: {
+                                    color: '#94a3b8',
+                                    callback: value => formatAbrev(value, prefijoHistorico)
+                                },
+                                grid: { color: '#1e293b' }
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            datalabels: {
+                                display: puntosEvolucion.length > 0 && puntosEvolucion.length <= 12,
+                                align: 'top',
+                                anchor: 'end',
+                                clamp: true,
+                                clip: false,
+                                color: '#e2e8f0',
+                                font: { size: 10, weight: 'bold' },
+                                formatter: value => formatAbrev(value, prefijoHistorico)
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: context => ` ${etiquetaHistorica}: ${formatearMontoFirmado(context.raw, prefijoHistorico.trim())}`
+                                }
+                            }
+                        }
+                    }
+                });
 
                 const mapPie = {};
                 data.forEach(r => {
@@ -776,7 +1209,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     else if (nivelPie === "Asesor") key = r.asesor || "Otro";
                     else if (nivelPie === "Cliente") key = r.cuenta || "Otro";
 
-                    const val = r[colTarget] || 0;
+                    const val = esDescubiertos ? Math.abs(r[colTarget] || 0) : (r[colTarget] || 0);
                     if (val > 0) {
                         mapPie[key] = (mapPie[key] || 0) + val;
                     }
@@ -825,7 +1258,8 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                     label: function(context) {
                                         const rawVal = context.raw || 0;
                                         const pct = totalLiquidezUniverso > 0 ? ((rawVal / totalLiquidezUniverso) * 100).toFixed(1) : 0;
-                                        return ` ${context.label}: ${formatAbrev(rawVal, prefixMoneda === '$' ? '$' : 'USD ')} (${pct}%)`;
+                                        const etiquetaMonto = formatAbrev(rawVal, prefixMoneda === '$' ? '$' : 'USD ');
+                                        return ` ${context.label}: ${esDescubiertos ? 'descubierto ' : ''}${etiquetaMonto} (${pct}%)`;
                                     }
                                 }
                             }
