@@ -723,6 +723,15 @@
 
             if (tabActual === 'aum') {
                 const totalAUMUniverso = data.reduce((acc, r) => acc + r.AUM, 0);
+                const totalCuentasUniverso = data.length;
+                const cuentasActivasUniverso = data.filter(r => r.esActivo).length;
+                const pctActivasUniverso = totalCuentasUniverso > 0
+                    ? (cuentasActivasUniverso / totalCuentasUniverso) * 100
+                    : 0;
+                const pctActivasUniversoTexto = pctActivasUniverso.toLocaleString('es-AR', {
+                    minimumFractionDigits: 1,
+                    maximumFractionDigits: 1
+                });
 
                 container.innerHTML = `
                     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -738,8 +747,12 @@
                                 </div>
                             </div>
                             <div class="card p-5 rounded-2xl">
-                                <div class="flex justify-between items-center mb-2">
+                                <div class="flex flex-wrap justify-between items-center gap-x-3 gap-y-2 mb-2">
                                     <h3 class="text-sm font-bold text-white">Cantidad de cuentas por asesor</h3>
+                                    <span
+                                        class="text-xs font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/60 px-2.5 py-1 rounded-md whitespace-nowrap"
+                                        title="${cuentasActivasUniverso.toLocaleString('es-AR')} de ${totalCuentasUniverso.toLocaleString('es-AR')} cuentas están activas en el universo seleccionado"
+                                    >Overall activo: <strong>${pctActivasUniversoTexto}%</strong></span>
                                     <span class="text-[10px] text-slate-400">🔵 Activo | 🟠 Inactivo</span>
                                 </div>
                                 <div class="overflow-y-auto max-h-72 pr-2">
