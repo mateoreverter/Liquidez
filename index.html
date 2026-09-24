@@ -14,6 +14,7 @@
     <!-- ARCHIVO DE DATOS LOCAL -->
     <script src="datos_cluster.js"></script>
     <script src="historial_liquidez.js"></script>
+    <script src="datos_intradia.js"></script>
     <style>
         body { background-color: #0b111e; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
         .card { background-color: #131b2e; border: 1px solid #1e293b; }
@@ -87,6 +88,7 @@
         <button class="pb-3 px-2 tab-btn tab-active" onclick="seleccionarTab('aum', this)">1. AUM y Cuentas</button>
         <button class="pb-3 px-2 tab-btn tab-inactive" onclick="seleccionarTab('liquidez', this)">2. Liquidez</button>
         <button class="pb-3 px-2 tab-btn tab-inactive" onclick="seleccionarTab('descubiertos', this)">3. Saldos descubiertos</button>
+        <button class="pb-3 px-2 tab-btn tab-inactive whitespace-nowrap" onclick="seleccionarTab('intradia', this)">4. Liquidez intradiaria <span class="text-[10px] text-violet-300">PRUEBA</span></button>
     </nav>
 
     <!-- BARRA DE FILTROS EN CASCADA -->
@@ -188,13 +190,13 @@
 
             const boxMoneda = document.getElementById('filtroMonedaBox');
             const boxCliente = document.getElementById('filtroClienteBox');
-            const esSaldos = tab === 'liquidez' || tab === 'descubiertos';
+            const esSaldos = tab !== 'aum';
             boxMoneda.style.display = esSaldos ? 'flex' : 'none';
             boxCliente.style.display = esSaldos ? 'flex' : 'none';
 
             const opcionCable = document.querySelector('#filtroMoneda option[value="Cable_CV7000"]');
             if (opcionCable) {
-                opcionCable.textContent = tab === 'descubiertos'
+                opcionCable.textContent = (tab === 'descubiertos' || tab === 'intradia')
                     ? 'Cable (Disponibles CI)'
                     : 'Cable + CV7000';
             }
@@ -710,6 +712,11 @@
         }
 
         function renderizarTabActual() {
+            if (tabActual === 'intradia') {
+                renderizarIntradia();
+                return;
+            }
+            if (typeof destruirGraficoIntradia === 'function') destruirGraficoIntradia();
             if (rawData.length === 0) return;
 
             let data = obtenerDatosFiltrados();
@@ -1282,5 +1289,6 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
             }
         }
     </script>
+    <script src="intradia_ui.js"></script>
 </body>
 </html>
