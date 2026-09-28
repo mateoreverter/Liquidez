@@ -7,6 +7,8 @@ let paginaOrdenesIntradia = 0;
 let filtroEstadoIntradia = 'todas';
 let detalleIntradiaAbierto = false;
 let firmaFiltroIntradia = '';
+let ordenClientesIntradia = 'magnitud';
+let direccionOrdenClientesIntradia = 'desc';
 const TAM_PAGINA_INTRADIA = 50;
 const ESTADOS_INTRADIA = {ci: 'Incluida CI', futuro: 'Compromiso futuro', revisar: 'Revisar', pendiente: 'Pendiente', sin_ejecucion: 'Sin ejecución', sin_efectivo: 'Sin efectivo', fuera_base: 'Fuera de la base'};
 
@@ -21,6 +23,17 @@ function horaIntradia(iso) {
 }
 function elegirCorteIntradia(v) { indiceCorteIntradia = Number(v); paginaClientesIntradia = 0; paginaOrdenesIntradia = 0; renderizarIntradia(); }
 function elegirClientesIntradia(v) { modoClientesIntradia = v; paginaClientesIntradia = 0; renderizarIntradia(); }
+function ordenarClientesIntradia(columna) {
+    if (!['cuenta','asesor','inicial','delta','estimado','futuro','revision'].includes(columna)) return;
+    if (ordenClientesIntradia === columna) {
+        direccionOrdenClientesIntradia = direccionOrdenClientesIntradia === 'asc' ? 'desc' : 'asc';
+    } else {
+        ordenClientesIntradia = columna;
+        direccionOrdenClientesIntradia = ['cuenta','asesor'].includes(columna) ? 'asc' : 'desc';
+    }
+    paginaClientesIntradia = 0;
+    renderizarIntradia();
+}
 function elegirEstadoIntradia(v) { filtroEstadoIntradia = v; paginaOrdenesIntradia = 0; detalleIntradiaAbierto = true; renderizarIntradia(); }
 function paginarIntradia(tipo, delta) {
     if (tipo === 'clientes') paginaClientesIntradia += delta;
@@ -87,7 +100,18 @@ function renderizarIntradia() {
     const sinBase = filas.length-conocidas.length;
     const revisiones = filas.reduce((a,c)=>a+c.revision,0);
     let tabla = filas.filter(c => modoClientesIntradia === 'todos' || (modoClientesIntradia === 'negativos' ? c.estimado != null && c.estimado < 0 : c.tieneMovimientos));
-    tabla.sort((a,b) => Math.abs(b.delta)-Math.abs(a.delta) || b.incluidas-a.incluidas || b.revision-a.revision || Math.abs(b.futuro)-Math.abs(a.futuro) || a.cuenta.localeCompare(b.cuenta));
+    const compararTexto = new Intl.Collator('es-AR', {numeric:true, sensitivity:'base'}).compare;
+    const valorOrden = c => ordenClientesIntradia === 'revision' ? (c.inicial == null ? null : c.revision) : c[ordenClientesIntradia];
+    tabla.sort((a,b) => {
+        if (ordenClientesIntradia === 'magnitud') {
+            return Math.abs(b.delta)-Math.abs(a.delta) || b.incluidas-a.incluidas || b.revision-a.revision
+                || Math.abs(b.futuro)-Math.abs(a.futuro) || compararTexto(a.cuenta,b.cuenta);
+        }
+        const va = valorOrden(a), vb = valorOrden(b);
+        if (va == null || vb == null) return (va == null ? 1 : 0)-(vb == null ? 1 : 0) || compararTexto(a.cuenta,b.cuenta);
+        const comparacion = typeof va === 'string' ? compararTexto(va,vb) : va-vb;
+        return (direccionOrdenClientesIntradia === 'asc' ? comparacion : -comparacion) || compararTexto(a.cuenta,b.cuenta);
+    });
     const paginas = Math.max(1,Math.ceil(tabla.length/TAM_PAGINA_INTRADIA));
     paginaClientesIntradia = Math.min(Math.max(0,paginaClientesIntradia),paginas-1);
     const pagina = tabla.slice(paginaClientesIntradia*TAM_PAGINA_INTRADIA,(paginaClientesIntradia+1)*TAM_PAGINA_INTRADIA);
@@ -111,6 +135,12 @@ function renderizarIntradia() {
     paginaOrdenesIntradia = Math.min(Math.max(0,paginaOrdenesIntradia),pagsOrdenes-1);
     const auditPagina = auditar.slice(paginaOrdenesIntradia*TAM_PAGINA_INTRADIA,(paginaOrdenesIntradia+1)*TAM_PAGINA_INTRADIA);
     const tarjeta = (titulo, valor, nota, clase) => `<div class="card rounded-2xl p-5"><p class="text-xs text-slate-400">${titulo}</p><p class="text-xl font-bold mt-2 ${clase}">${dinero(valor)}</p><p class="text-[11px] text-slate-500 mt-2">${nota}</p></div>`;
+    const encabezado = (campo, titulo, numerico=false) => {
+        const activo = ordenClientesIntradia === campo;
+        const sentido = activo ? direccionOrdenClientesIntradia : 'none';
+        const flecha = activo ? (sentido === 'asc' ? '▲' : '▼') : '↕';
+        return `<th class="p-3 ${numerico?'text-right':''}" aria-sort="${sentido === 'none' ? 'none' : sentido === 'asc' ? 'ascending' : 'descending'}"><button type="button" class="w-full flex items-center gap-1.5 ${numerico?'justify-end':''} hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400 rounded" title="Ordenar por ${titulo}" onclick="ordenarClientesIntradia('${campo}')">${titulo}<span class="text-[10px] ${activo?'text-violet-300':'text-slate-600'}" aria-hidden="true">${flecha}</span></button></th>`;
+    };
     container.innerHTML = `
         <section class="card rounded-2xl p-5 border-violet-500/30">
             <div class="flex flex-wrap items-start justify-between gap-4">
@@ -141,12 +171,12 @@ function renderizarIntradia() {
         </div>
         <section class="card rounded-2xl p-5"><h3 class="text-sm font-bold text-white">Evolución intradiaria del saldo estimado</h3><p class="text-xs text-slate-400 mt-1">Foto de la mañana y estimaciones hasta la actualización seleccionada. Horarios de procesamiento, sin actualización en vivo.</p><div class="h-72 mt-4 relative"><canvas id="graficoIntradia"></canvas></div></section>
         <section class="card rounded-2xl p-5">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-4"><div><h3 class="text-sm font-bold text-white">Saldo estimado por cliente</h3><p class="text-xs text-slate-500 mt-1">Ordenado por magnitud del movimiento CI. Los filtros superiores gobiernan los totales y el gráfico.</p></div>
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4"><div><h3 class="text-sm font-bold text-white">Saldo estimado por cliente</h3><p class="text-xs text-slate-500 mt-1">Tocá una columna para ordenar de mayor a menor o de menor a mayor. Por defecto: magnitud del movimiento CI. Los filtros superiores gobiernan los totales y el gráfico.</p></div>
             <select class="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs" onchange="elegirClientesIntradia(this.value)">
                 ${[['movimientos','Clientes con movimientos'],['todos','Todos los clientes'],['negativos','Estimados negativos']].map(([v,l])=>`<option value="${v}" ${modoClientesIntradia===v?'selected':''}>${l}</option>`).join('')}
             </select></div>
             <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="text-slate-400 bg-slate-900"><tr>
-                <th class="p-3">Cliente / Comitente</th><th class="p-3">Asesor</th><th class="p-3 text-right">Base</th><th class="p-3 text-right">Movimiento</th><th class="p-3 text-right text-violet-300">Estimado</th><th class="p-3 text-right">Compromiso 24h</th><th class="p-3">Revisión</th><th class="p-3"></th>
+                ${encabezado('cuenta','Cliente / Comitente')}${encabezado('asesor','Asesor')}${encabezado('inicial','Base',true)}${encabezado('delta','Movimiento',true)}${encabezado('estimado','Estimado',true)}${encabezado('futuro','Compromiso 24h',true)}${encabezado('revision','Revisión')}<th class="p-3"></th>
             </tr></thead><tbody class="divide-y divide-slate-800">${pagina.map(c=>`<tr class="hover:bg-slate-800/50"><td class="p-3 font-medium text-slate-200">${escIntradia(c.cuenta)}<span class="block text-[10px] text-slate-500">${escIntradia(c.comitente)}</span></td><td class="p-3 text-slate-400">${escIntradia(c.asesor)}</td><td class="p-3 text-right whitespace-nowrap">${dinero(c.inicial)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.delta)}">${dinero(c.delta)}</td><td class="p-3 text-right whitespace-nowrap font-bold ${c.estimado<0?'text-rose-300':'text-violet-200'}">${dinero(c.estimado)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.futuro)}">${dinero(c.futuro)}</td><td class="p-3 text-amber-300">${c.inicial==null?'Sin base':c.revision?`${c.revision} movimientos`:'—'}</td><td class="p-3"><button data-cliente-intradia="${escIntradia(c.id)}" class="text-sky-300 whitespace-nowrap hover:underline">Ver movimientos</button></td></tr>`).join('') || '<tr><td colspan="8" class="p-8 text-center text-slate-500">No hay clientes para esta selección.</td></tr>'}</tbody></table></div>
             ${paginadorIntradia('clientes',paginaClientesIntradia,paginas,tabla.length)}
         </section>
