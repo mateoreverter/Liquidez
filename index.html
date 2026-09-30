@@ -98,10 +98,11 @@
             
             <div class="flex items-center gap-2" id="filtroMonedaBox" style="display: none;">
                 <label class="text-sky-400 font-bold" for="filtroMoneda">Moneda:</label>
-                <select id="filtroMoneda" class="bg-slate-900 border border-sky-500/50 rounded-lg px-2.5 py-1 text-sky-300 font-semibold focus:outline-none" onchange="renderizarTabActual()">
+                <select id="filtroMoneda" class="bg-slate-900 border border-sky-500/50 rounded-lg px-2.5 py-1 text-sky-300 font-semibold focus:outline-none" onchange="cambiarMonedaGlobal(this.value)">
                     <option value="ARS" selected>ARS ($ en CI)</option>
                     <option value="MEP">MEP</option>
                     <option value="Cable_CV7000">Cable + CV7000</option>
+                    <option value="USD_TOTAL">Liquidez total en USD (MEP)</option>
                 </select>
             </div>
 
@@ -200,12 +201,23 @@
                     ? 'Cable (Disponibles CI)'
                     : 'Cable + CV7000';
             }
+            const opcionTotal = document.querySelector('#filtroMoneda option[value="USD_TOTAL"]');
+            if (opcionTotal) opcionTotal.hidden = tab === 'intradia';
+            if (tab === 'intradia' && document.getElementById('filtroMoneda').value === 'USD_TOTAL') {
+                document.getElementById('filtroMoneda').value = 'ARS';
+                monedaEvolucionSeleccionada = 'ARS';
+            }
+            renderizarTabActual();
+        }
+
+        function cambiarMonedaGlobal(moneda) {
+            document.getElementById('filtroMoneda').value = moneda;
+            monedaEvolucionSeleccionada = moneda;
             renderizarTabActual();
         }
 
         function cambiarMonedaEvolucion(moneda) {
-            monedaEvolucionSeleccionada = moneda;
-            renderizarTabActual();
+            cambiarMonedaGlobal(moneda);
         }
 
         function extractFA(equipoStr) {
@@ -275,7 +287,9 @@
                     negocio: cliente[5] || 'S/D',
                     ars: Array.isArray(cliente[6]) ? cliente[6].map(Number) : [],
                     mep: Array.isArray(cliente[7]) ? cliente[7].map(Number) : [],
-                    cable: Array.isArray(cliente[8]) ? cliente[8].map(Number) : []
+                    cable: Array.isArray(cliente[8]) ? cliente[8].map(Number) : [],
+                    cv7000: Array.isArray(cliente[9]) ? cliente[9].map(valor => valor == null ? null : Number(valor)) : [],
+                    tcMep: Array.isArray(cliente[10]) ? cliente[10].map(valor => valor == null ? null : Number(valor)) : []
                 }));
             }
 
@@ -291,6 +305,11 @@
                 rawHistory = normalizarHistorial(
                     (typeof historialLiquidez !== 'undefined') ? historialLiquidez : []
                 );
+                const tasasMep = rawData.map(row => Number(row['Tipo Cbio MEP'] || row['Tipo Cambio MEP']))
+                    .filter(tasa => Number.isFinite(tasa) && tasa > 0);
+                const rangoTasas = tasasMep.reduce((rango, tasa) => [Math.min(rango[0], tasa), Math.max(rango[1], tasa)], [Infinity, -Infinity]);
+                const tasaComunMep = tasasMep.length && rangoTasas[1]-rangoTasas[0] < 0.000001
+                    ? tasasMep[0] : null;
 
                 // Mapeo robusto: tolerante a mayúsculas y minúsculas generadas desde Pandas
                 rawData.forEach(row => {
@@ -303,7 +322,10 @@
                     row.CV7000 = parseFloat(row['cv7000'] || row['CV7000']) || 0;
                     row.CABLE_CI = parseFloat(row['Cable Disponibles CI']) || 0;
                     row.CABLE_CV7000 = (row.CABLE_CI) + (row.CV7000);
-                    row.TC_MEP = parseFloat(row['Tipo Cbio MEP'] || row['Tipo Cambio MEP']) || 1540.0;
+                    const tasaInformada = Number(row['Tipo Cbio MEP'] || row['Tipo Cambio MEP']);
+                    row.TC_MEP = tasaInformada > 0 ? tasaInformada : tasaComunMep;
+                    row.USD_TOTAL = row.ARS_CI && !(row.TC_MEP > 0) ? null
+                        : (row.ARS_CI ? row.ARS_CI / row.TC_MEP : 0) + row.MEP_CI + row.CABLE_CI + row.CV7000;
 
                     const act = row.activo || row.Activo || row.ACTIVO;
                     row.esActivo = (act === 1 || act === "1");
@@ -644,16 +666,33 @@
             const historialFiltrado = obtenerHistorialFiltrado();
 
             if (historialEsPorCliente) {
-                const propiedad = moneda === 'ARS' ? 'ars' : (moneda === 'MEP' ? 'mep' : 'cable');
-                return historialFechas.map((fecha, indice) => ({
-                    fecha,
-                    valor: historialFiltrado.reduce((total, row) => {
-                        const valor = Number(row[propiedad]?.[indice]) || 0;
-                        return total + (soloNegativos && valor >= 0 ? 0 : valor);
-                    }, 0)
-                }));
+                return historialFechas.map((fecha, indice) => {
+                    let valor = 0;
+                    let completo = true;
+                    historialFiltrado.forEach(row => {
+                        const ars = Number(row.ars?.[indice]) || 0;
+                        const mep = Number(row.mep?.[indice]) || 0;
+                        const cable = Number(row.cable?.[indice]) || 0;
+                        const cvRaw = row.cv7000?.[indice];
+                        const tasa = Number(row.tcMep?.[indice]);
+                        let saldo;
+                        if (moneda === 'ARS') saldo = ars;
+                        else if (moneda === 'MEP') saldo = mep;
+                        else if (moneda === 'Cable_CV7000' && soloNegativos) saldo = cable;
+                        else if (cvRaw == null || !Number.isFinite(Number(cvRaw))) saldo = null;
+                        else if (moneda === 'Cable_CV7000') saldo = cable + Number(cvRaw);
+                        else saldo = ars && !(tasa > 0) ? null
+                            : (ars ? ars / tasa : 0) + mep + cable + Number(cvRaw);
+                        if (saldo == null) completo = false;
+                        else valor += soloNegativos && saldo >= 0 ? 0 : saldo;
+                    });
+                    return {fecha, valor: completo ? valor : null};
+                });
             }
 
+            if (moneda === 'USD_TOTAL' || (moneda === 'Cable_CV7000' && !soloNegativos)) {
+                return historialFechas.map(fecha => ({fecha, valor: null}));
+            }
             const columna = moneda === 'ARS' ? 'ars_ci' : (moneda === 'MEP' ? 'mep_ci' : 'cable_ci');
             const evolucionPorFecha = {};
             historialFiltrado.forEach(row => {
@@ -982,8 +1021,18 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                         ? 'Saldos descubiertos en Cable por cliente'
                         : 'Liquidez en Cable + CV7000 por cliente';
                     prefixMoneda = 'USD';
+                } else if (monedaSel === 'USD_TOTAL') {
+                    colTarget = 'USD_TOTAL';
+                    labelHeader = 'Total USD (MEP)';
+                    titleLeft = esDescubiertos
+                        ? 'Saldos descubiertos totales en USD por cliente'
+                        : 'Liquidez total en USD por cliente';
+                    prefixMoneda = 'USD';
                 }
 
+                const cuentasSinTC = monedaSel === 'USD_TOTAL'
+                    ? data.filter(r => r.USD_TOTAL == null).length : 0;
+                if (cuentasSinTC) data = data.filter(r => r.USD_TOTAL != null);
                 if (esDescubiertos) {
                     data = data.filter(r => Number(r[colTarget]) < 0);
                 }
@@ -1018,7 +1067,8 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
 
                 const etiquetaPorcentaje = esDescubiertos ? '% del descubierto' : '% del Total';
                 const etiquetaRatio = esDescubiertos ? 'Desc. / AUM Asesor' : 'Liq / AUM Asesor';
-                const tituloTotal = esDescubiertos ? 'Total saldos descubiertos' : 'Total Universo Liquidez';
+                const tituloTotal = (esDescubiertos ? 'Total saldos descubiertos' : 'Total Universo Liquidez')
+                    + (cuentasSinTC ? ' (parcial)' : '');
                 const claseImporte = esDescubiertos ? 'text-rose-400' : 'text-white';
                 const claseTotal = esDescubiertos ? 'text-rose-400' : 'text-emerald-400';
                 const claseAyuda = esDescubiertos
@@ -1053,7 +1103,9 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                 <span>${tituloTotal}</span>
                                 <div class="text-right">
                                     <span class="${claseTotal}" id="totalLiqDisplay">$0,00</span>
-                                    <span class="text-xs text-slate-400 block font-normal">${esDescubiertos ? `(${data.length.toLocaleString('es-AR')} cuentas con saldo negativo)` : '(100% Universo Seleccionado)'}</span>
+                                    <span class="text-xs text-slate-400 block font-normal">${cuentasSinTC
+                                        ? `${cuentasSinTC.toLocaleString('es-AR')} cuenta(s) con ARS sin tipo de cambio excluidas`
+                                        : esDescubiertos ? `(${data.length.toLocaleString('es-AR')} cuentas con saldo negativo)` : '(100% Universo Seleccionado)'}</span>
                                 </div>
                             </div>
                         </div>
@@ -1074,6 +1126,8 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                             <div>
                                 <h3 class="text-sm font-bold text-white" id="tituloEvolucionLiquidez">${esDescubiertos ? 'Evolución de saldos descubiertos' : 'Evolución de la liquidez'}</h3>
                                 <p class="text-[11px] text-slate-400 mt-1">Histórico diario según los filtros seleccionados</p>
+                                ${(monedaEvolucionSeleccionada === 'USD_TOTAL' || (!esDescubiertos && monedaEvolucionSeleccionada === 'Cable_CV7000'))
+                                    ? '<p class="text-[11px] text-amber-300 mt-1">Las fechas anteriores sin TC MEP o CV7000 no se convierten con la cotización de hoy.</p>' : ''}
                             </div>
                             <div class="flex items-center gap-3">
                                 <div class="flex items-center gap-2">
@@ -1081,7 +1135,8 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                     <select id="filtroMonedaEvolucion" class="bg-slate-900 border border-sky-500/50 rounded-lg px-2.5 py-1.5 text-xs text-sky-300 font-semibold focus:outline-none" onchange="cambiarMonedaEvolucion(this.value)">
                                         <option value="ARS" ${monedaEvolucionSeleccionada === 'ARS' ? 'selected' : ''}>ARS</option>
                                         <option value="MEP" ${monedaEvolucionSeleccionada === 'MEP' ? 'selected' : ''}>MEP</option>
-                                        <option value="Cable" ${monedaEvolucionSeleccionada === 'Cable' ? 'selected' : ''}>Cable</option>
+                                        <option value="Cable_CV7000" ${monedaEvolucionSeleccionada === 'Cable_CV7000' ? 'selected' : ''}>${esDescubiertos ? 'Cable' : 'Cable + CV7000'}</option>
+                                        <option value="USD_TOTAL" ${monedaEvolucionSeleccionada === 'USD_TOTAL' ? 'selected' : ''}>Total USD (MEP)</option>
                                     </select>
                                 </div>
                                 <div id="ultimoDatoEvolucion" class="text-xs ${esDescubiertos ? 'text-rose-300' : 'text-sky-300'} font-semibold text-left sm:text-right"></div>
@@ -1136,16 +1191,12 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                 document.getElementById('totalLiqDisplay').innerText = formatearMontoFirmado(totalMostrado, prefixMoneda);
 
                 const etiquetaHistorica = monedaEvolucionSeleccionada === 'ARS'
-                    ? (esDescubiertos
-                        ? 'Saldos descubiertos en ARS ($ Disponibles CI)'
-                        : 'Liquidez en ARS ($ Disponibles CI)')
-                    : (monedaEvolucionSeleccionada === 'MEP'
-                        ? (esDescubiertos
-                            ? 'Saldos descubiertos en USD MEP (MEP Disponibles CI)'
-                            : 'Liquidez en USD MEP (MEP Disponibles CI)')
-                        : (esDescubiertos
-                            ? 'Saldos descubiertos en USD Cable (Cable Disponibles CI)'
-                            : 'Liquidez en USD Cable (Cable Disponibles CI)'));
+                    ? (esDescubiertos ? 'Saldos descubiertos en ARS ($ Disponibles CI)' : 'Liquidez en ARS ($ Disponibles CI)')
+                    : monedaEvolucionSeleccionada === 'MEP'
+                        ? (esDescubiertos ? 'Saldos descubiertos en USD MEP (MEP Disponibles CI)' : 'Liquidez en USD MEP (MEP Disponibles CI)')
+                        : monedaEvolucionSeleccionada === 'USD_TOTAL'
+                            ? (esDescubiertos ? 'Saldos descubiertos netos en USD (ARS al MEP + MEP + Cable + CV7000)' : 'Liquidez total en USD (ARS al MEP + MEP + Cable + CV7000)')
+                            : (esDescubiertos ? 'Saldos descubiertos en USD Cable (Cable Disponibles CI)' : 'Liquidez en USD Cable + CV7000');
                 const prefijoHistorico = monedaEvolucionSeleccionada === 'ARS' ? '$' : 'USD ';
                 const puntosEvolucion = obtenerPuntosEvolucion(monedaEvolucionSeleccionada, esDescubiertos);
 
@@ -1155,8 +1206,10 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     ? `Evolución de ${tituloHistorico} — ${clienteHistorico.cuenta}`
                     : `Evolución de ${tituloHistorico}`;
                 const ultimoPunto = puntosEvolucion[puntosEvolucion.length - 1];
-                document.getElementById('ultimoDatoEvolucion').innerHTML = ultimoPunto
+                document.getElementById('ultimoDatoEvolucion').innerHTML = ultimoPunto && ultimoPunto.valor != null
                     ? `<span class="text-slate-400 font-normal">Último registro (${formatearFechaCorta(ultimoPunto.fecha)}):</span><br>${formatAbrev(ultimoPunto.valor, prefijoHistorico)}`
+                    : ultimoPunto
+                        ? '<span class="text-amber-300">Faltan TC MEP o CV7000 en el histórico de esta fecha</span>'
                     : '<span class="text-slate-500">Sin información histórica</span>';
 
                 if (chartEvolucionInstance) chartEvolucionInstance.destroy();
@@ -1211,7 +1264,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                 clip: false,
                                 color: '#e2e8f0',
                                 font: { size: 10, weight: 'bold' },
-                                formatter: value => formatAbrev(value, prefijoHistorico)
+                                formatter: value => value == null ? '' : formatAbrev(value, prefijoHistorico)
                             },
                             tooltip: {
                                 callbacks: {
