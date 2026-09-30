@@ -181,6 +181,30 @@
         let historialEsPorCliente = false;
         let clienteSeleccionadoId = '';
         let listaClientesVisibles = [];
+        // Referencias facilitadas el 30/09/2026 para el histórico anterior al
+        // guardado del TC del cluster. Nunca reemplazan un TC ya registrado.
+        const referenciasMepHistoricas = Object.freeze({
+            '2026-08-04': 1520.94, '2026-08-05': 1518.45, '2026-08-06': 1520.28,
+            '2026-08-07': 1524.77, '2026-08-08': 1524.77, '2026-08-09': 1524.77,
+            '2026-08-10': 1526.26, '2026-08-11': 1523.84, '2026-08-12': 1525.19,
+            '2026-08-13': 1520.94, '2026-08-14': 1514.78, '2026-08-15': 1514.78,
+            '2026-08-16': 1514.78, '2026-08-17': 1514.78, '2026-08-18': 1517.76,
+            '2026-08-19': 1522.29, '2026-08-20': 1524.57, '2026-08-21': 1535.08,
+            '2026-08-22': 1535.08, '2026-08-23': 1535.08, '2026-08-24': 1538.43,
+            '2026-08-25': 1538.74, '2026-08-26': 1542.96, '2026-08-27': 1536.34,
+            '2026-08-28': 1537.49, '2026-08-29': 1537.49, '2026-08-30': 1537.49,
+            '2026-08-31': 1535.52, '2026-09-01': 1532.71, '2026-09-02': 1534.30,
+            '2026-09-03': 1528.13, '2026-09-04': 1525.39, '2026-09-05': 1525.39,
+            '2026-09-06': 1525.39, '2026-09-07': 1528.21, '2026-09-08': 1527.81,
+            '2026-09-09': 1532.55, '2026-09-10': 1536.39, '2026-09-11': 1538.16,
+            '2026-09-12': 1538.16, '2026-09-13': 1538.16, '2026-09-14': 1534.10,
+            '2026-09-15': 1532.45, '2026-09-16': 1537.56, '2026-09-17': 1533.83,
+            '2026-09-18': 1538.32, '2026-09-19': 1538.32, '2026-09-20': 1538.32,
+            '2026-09-21': 1534.44, '2026-09-22': 1536.51, '2026-09-23': 1541.89,
+            '2026-09-24': 1544.35, '2026-09-25': 1552.50, '2026-09-26': 1552.50,
+            '2026-09-27': 1552.50, '2026-09-28': 1555.31, '2026-09-29': 1549.36,
+            '2026-09-30': 1549.36
+        });
 
         function seleccionarTab(tab, element) {
             document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -669,24 +693,32 @@
                 return historialFechas.map((fecha, indice) => {
                     let valor = 0;
                     let completo = true;
+                    let sinCv7000 = false;
                     historialFiltrado.forEach(row => {
                         const ars = Number(row.ars?.[indice]) || 0;
                         const mep = Number(row.mep?.[indice]) || 0;
                         const cable = Number(row.cable?.[indice]) || 0;
                         const cvRaw = row.cv7000?.[indice];
-                        const tasa = Number(row.tcMep?.[indice]);
+                        const tasaCluster = Number(row.tcMep?.[indice]);
+                        const tasa = tasaCluster > 0 ? tasaCluster : referenciasMepHistoricas[fecha];
                         let saldo;
                         if (moneda === 'ARS') saldo = ars;
                         else if (moneda === 'MEP') saldo = mep;
                         else if (moneda === 'Cable_CV7000' && soloNegativos) saldo = cable;
-                        else if (cvRaw == null || !Number.isFinite(Number(cvRaw))) saldo = null;
-                        else if (moneda === 'Cable_CV7000') saldo = cable + Number(cvRaw);
-                        else saldo = ars && !(tasa > 0) ? null
-                            : (ars ? ars / tasa : 0) + mep + cable + Number(cvRaw);
+                        else {
+                            // El histórico viejo no guardaba CV7000. Su ausencia
+                            // produce una estimación parcial, no un dato inventado.
+                            const faltaCv = cvRaw == null || !Number.isFinite(Number(cvRaw));
+                            if (faltaCv) sinCv7000 = true;
+                            const cv7000 = faltaCv ? 0 : Number(cvRaw);
+                            if (moneda === 'Cable_CV7000') saldo = cable + cv7000;
+                            else saldo = ars && !(tasa > 0) ? null
+                                : (ars ? ars / tasa : 0) + mep + cable + cv7000;
+                        }
                         if (saldo == null) completo = false;
                         else valor += soloNegativos && saldo >= 0 ? 0 : saldo;
                     });
-                    return {fecha, valor: completo ? valor : null};
+                    return {fecha, valor: completo ? valor : null, sinCv7000};
                 });
             }
 
@@ -1127,7 +1159,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                 <h3 class="text-sm font-bold text-white" id="tituloEvolucionLiquidez">${esDescubiertos ? 'Evolución de saldos descubiertos' : 'Evolución de la liquidez'}</h3>
                                 <p class="text-[11px] text-slate-400 mt-1">Histórico diario según los filtros seleccionados</p>
                                 ${(monedaEvolucionSeleccionada === 'USD_TOTAL' || (!esDescubiertos && monedaEvolucionSeleccionada === 'Cable_CV7000'))
-                                    ? '<p class="text-[11px] text-amber-300 mt-1">Las fechas anteriores sin TC MEP o CV7000 no se convierten con la cotización de hoy.</p>' : ''}
+                                    ? '<p class="text-[11px] text-amber-300 mt-1">Fechas anteriores: si falta el TC del clúster se usa la referencia MEP de esa fecha. Si falta CV7000, el punto es parcial (sin ese saldo).</p>' : ''}
                             </div>
                             <div class="flex items-center gap-3">
                                 <div class="flex items-center gap-2">
@@ -1195,8 +1227,8 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     : monedaEvolucionSeleccionada === 'MEP'
                         ? (esDescubiertos ? 'Saldos descubiertos en USD MEP (MEP Disponibles CI)' : 'Liquidez en USD MEP (MEP Disponibles CI)')
                         : monedaEvolucionSeleccionada === 'USD_TOTAL'
-                            ? (esDescubiertos ? 'Saldos descubiertos netos en USD (ARS al MEP + MEP + Cable + CV7000)' : 'Liquidez total en USD (ARS al MEP + MEP + Cable + CV7000)')
-                            : (esDescubiertos ? 'Saldos descubiertos en USD Cable (Cable Disponibles CI)' : 'Liquidez en USD Cable + CV7000');
+                            ? (esDescubiertos ? 'Saldos descubiertos netos expresados en USD' : 'Liquidez expresada en USD')
+                            : (esDescubiertos ? 'Saldos descubiertos en USD Cable (Cable Disponibles CI)' : 'Liquidez en USD Cable');
                 const prefijoHistorico = monedaEvolucionSeleccionada === 'ARS' ? '$' : 'USD ';
                 const puntosEvolucion = obtenerPuntosEvolucion(monedaEvolucionSeleccionada, esDescubiertos);
 
@@ -1207,9 +1239,9 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     : `Evolución de ${tituloHistorico}`;
                 const ultimoPunto = puntosEvolucion[puntosEvolucion.length - 1];
                 document.getElementById('ultimoDatoEvolucion').innerHTML = ultimoPunto && ultimoPunto.valor != null
-                    ? `<span class="text-slate-400 font-normal">Último registro (${formatearFechaCorta(ultimoPunto.fecha)}):</span><br>${formatAbrev(ultimoPunto.valor, prefijoHistorico)}`
+                    ? `<span class="text-slate-400 font-normal">Último registro (${formatearFechaCorta(ultimoPunto.fecha)}):</span><br>${ultimoPunto.sinCv7000 ? '≈ ' : ''}${formatAbrev(ultimoPunto.valor, prefijoHistorico)}${ultimoPunto.sinCv7000 ? ' <span class="text-amber-300 text-[10px]">sin CV7000</span>' : ''}`
                     : ultimoPunto
-                        ? '<span class="text-amber-300">Faltan TC MEP o CV7000 en el histórico de esta fecha</span>'
+                        ? '<span class="text-amber-300">Falta la referencia MEP para convertir esta fecha</span>'
                     : '<span class="text-slate-500">Sin información histórica</span>';
 
                 if (chartEvolucionInstance) chartEvolucionInstance.destroy();
@@ -1222,7 +1254,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                             data: puntosEvolucion.map(x => x.valor),
                             borderColor: esDescubiertos ? '#fb7185' : '#38bdf8',
                             backgroundColor: esDescubiertos ? 'rgba(251, 113, 133, 0.12)' : 'rgba(56, 189, 248, 0.12)',
-                            pointBackgroundColor: esDescubiertos ? '#fb7185' : '#38bdf8',
+                            pointBackgroundColor: puntosEvolucion.map(p => p.sinCv7000 ? '#fbbf24' : (esDescubiertos ? '#fb7185' : '#38bdf8')),
                             pointBorderColor: esDescubiertos ? '#ffe4e6' : '#e0f2fe',
                             pointRadius: 4,
                             pointHoverRadius: 6,
@@ -1268,7 +1300,16 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                             },
                             tooltip: {
                                 callbacks: {
-                                    label: context => ` ${etiquetaHistorica}: ${formatearMontoFirmado(context.raw, prefijoHistorico.trim())}`
+                                    label: context => {
+                                        const incompleto = puntosEvolucion[context.dataIndex]?.sinCv7000;
+                                        const componentes = monedaEvolucionSeleccionada === 'USD_TOTAL'
+                                            ? (incompleto ? 'ARS al MEP + MEP + Cable; CV7000 no disponible'
+                                                : 'ARS al MEP + MEP + Cable + CV7000')
+                                            : monedaEvolucionSeleccionada === 'Cable_CV7000' && !esDescubiertos
+                                                ? (incompleto ? 'Cable; CV7000 no disponible' : 'Cable + CV7000')
+                                                : '';
+                                        return ` ${etiquetaHistorica}${componentes ? ` (${componentes})` : ''}: ${incompleto ? '≈ ' : ''}${formatearMontoFirmado(context.raw, prefijoHistorico.trim())}`;
+                                    }
                                 }
                             }
                         }
