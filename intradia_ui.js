@@ -1,13 +1,14 @@
 /* Vista de prueba. Solo lee datos_intradia; no altera rawData ni rawHistory. */
 let graficoIntradia = null;
+let graficoFAIntradia = null;
 let indiceCorteIntradia = -1;
-let modoClientesIntradia = 'movimientos';
+let modoClientesIntradia = 'saldos';
 let paginaClientesIntradia = 0;
 let paginaOrdenesIntradia = 0;
 let filtroEstadoIntradia = 'todas';
 let detalleIntradiaAbierto = false;
 let firmaFiltroIntradia = '';
-let ordenClientesIntradia = 'magnitud';
+let ordenClientesIntradia = 'estimado';
 let direccionOrdenClientesIntradia = 'desc';
 const TAM_PAGINA_INTRADIA = 50;
 const ESTADOS_INTRADIA = {ci: 'Incluida CI', futuro: 'Compromiso futuro', revisar: 'Revisar', pendiente: 'Pendiente', sin_ejecucion: 'Sin ejecución', sin_efectivo: 'Sin efectivo', fuera_base: 'Fuera de la base'};
@@ -17,6 +18,7 @@ function escIntradia(v) {
 }
 function destruirGraficoIntradia() {
     if (graficoIntradia) { graficoIntradia.destroy(); graficoIntradia = null; }
+    if (graficoFAIntradia) { graficoFAIntradia.destroy(); graficoFAIntradia = null; }
 }
 function horaIntradia(iso) {
     return new Intl.DateTimeFormat('es-AR', {timeZone:'America/Argentina/Buenos_Aires', hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(iso));
@@ -24,7 +26,7 @@ function horaIntradia(iso) {
 function elegirCorteIntradia(v) { indiceCorteIntradia = Number(v); paginaClientesIntradia = 0; paginaOrdenesIntradia = 0; renderizarIntradia(); }
 function elegirClientesIntradia(v) { modoClientesIntradia = v; paginaClientesIntradia = 0; renderizarIntradia(); }
 function ordenarClientesIntradia(columna) {
-    if (!['cuenta','asesor','inicial','delta','estimado','futuro','revision'].includes(columna)) return;
+    if (!['cuenta','asesor','inicial','delta','estimado','futuro','incluidas','revision'].includes(columna)) return;
     if (ordenClientesIntradia === columna) {
         direccionOrdenClientesIntradia = direccionOrdenClientesIntradia === 'asc' ? 'desc' : 'asc';
     } else {
@@ -99,7 +101,29 @@ function renderizarIntradia() {
     const futuro = filas.reduce((a,c)=>a+c.futuro,0);
     const sinBase = filas.length-conocidas.length;
     const revisiones = filas.reduce((a,c)=>a+c.revision,0);
-    let tabla = filas.filter(c => modoClientesIntradia === 'todos' || (modoClientesIntradia === 'negativos' ? c.estimado != null && c.estimado < 0 : c.tieneMovimientos));
+    const cuentasConOperaciones = filas.filter(c => c.incluidas > 0).length;
+    const cuentasSoloRevision = filas.filter(c => c.incluidas === 0 && c.revision > 0).length;
+    // La tabla muestra saldos, no actividad: dos operaciones que se cancelan
+    // dejan fuera a una cuenta que empezó y terminó en cero. Una base vacía
+    // permanece desconocida; solo se conserva si hay flujo CI neto conocido.
+    const saldoVisible = valor => valor != null && Math.abs(valor) >= 0.005;
+    const mostrarSaldo = c => saldoVisible(c.inicial) || saldoVisible(c.estimado)
+        || (c.inicial == null && saldoVisible(c.delta));
+    const cuentasConSaldo = filas.filter(mostrarSaldo).length;
+    // La distribución replica la de Liquidez: suma saldos estimados positivos
+    // por FA, respetando moneda, fecha y filtros de personas.
+    const saldosPorFA = new Map();
+    filas.forEach(c => {
+        if (c.estimado != null && c.estimado > 0) {
+            const nombre = c.fa || 'Otro';
+            saldosPorFA.set(nombre, (saldosPorFA.get(nombre) || 0) + c.estimado);
+        }
+    });
+    const distribucionFA = [...saldosPorFA].sort((a,b) => b[1]-a[1]);
+    const totalDistribucionFA = distribucionFA.reduce((a,[,valor]) => a+valor,0);
+    let tabla = filas.filter(c => modoClientesIntradia === 'todos'
+        || (modoClientesIntradia === 'negativos' ? c.estimado != null && c.estimado < -0.005
+            : modoClientesIntradia === 'movimientos' ? c.tieneMovimientos : mostrarSaldo(c)));
     const compararTexto = new Intl.Collator('es-AR', {numeric:true, sensitivity:'base'}).compare;
     const valorOrden = c => ordenClientesIntradia === 'revision' ? (c.inicial == null ? null : c.revision) : c[ordenClientesIntradia];
     tabla.sort((a,b) => {
@@ -123,6 +147,9 @@ function renderizarIntradia() {
     })
         .filter(r => (ids.has(r.cliente) || (sinFiltrosPersonas && r.resultado === 'fuera_base'))
             && (monedas.includes(r.moneda) || r.moneda === 'OTRA'));
+    const resultadosOrdenes = corte?.conteo_fuente?.['Órdenes'] || {};
+    const totalOrdenesFuente = Number(corte?.fuentes?.ordenes || 0);
+    const ordenesVisibles = ordenes.filter(r => r.fuente === 'Órdenes').length;
     const efectosCi = ordenes.filter(r => ids.has(r.cliente) && monedas.includes(r.moneda)
         && r.resultado === 'ci' && Number.isFinite(r.efecto));
     const entradas = efectosCi.reduce((a,r)=>a+Math.max(0,r.efecto),0);
@@ -156,28 +183,34 @@ function renderizarIntradia() {
             </div>
             <p class="text-xs text-amber-200/90 mt-4 leading-relaxed">A tener en cuenta que este dashboard de liquidez intradiaria es un aproximado de cálculos que vienen de los reportes del clúster, órdenes, acreditaciones y pago de cupones/dividendos. La idea es tener una visualización rápida de los movimientos durante el día de los saldos líquidos, <strong>no tomar lo que dice como la verdad absoluta y siempre chequear en los comitentes</strong>.</p>
             ${corte?.fuentes?`<p class="text-[11px] text-slate-500 mt-3">Fuentes de esta actualización: ${Number(corte.fuentes.ordenes||0).toLocaleString('es-AR')} órdenes · ${Number(corte.fuentes.acreditaciones||0).toLocaleString('es-AR')} acreditaciones · ${Number(corte.fuentes.cupones_dividendos||0).toLocaleString('es-AR')} cupones/dividendos · ${Number(corte.comprobantes_conciliados||0).toLocaleString('es-AR')} comprobantes conciliados con transferencias</p>`:''}
+            ${corte?.conteo_fuente?.['Órdenes']?`<p class="text-[11px] text-sky-200 mt-2">Órdenes del reporte (${totalOrdenesFuente.toLocaleString('es-AR')}, todas las monedas): ${Number(resultadosOrdenes.ci||0).toLocaleString('es-AR')} incorporadas CI · ${Number(resultadosOrdenes.futuro||0).toLocaleString('es-AR')} compromisos futuros · ${Number((resultadosOrdenes.revisar||0)+(resultadosOrdenes.pendiente||0)).toLocaleString('es-AR')} para revisar/pendientes · ${Number((resultadosOrdenes.sin_efectivo||0)+(resultadosOrdenes.sin_ejecucion||0)).toLocaleString('es-AR')} sin efecto/ejecución · ${Number(resultadosOrdenes.fuera_base||0).toLocaleString('es-AR')} fuera de SS/VL. Con la moneda y los filtros actuales se ven ${ordenesVisibles.toLocaleString('es-AR')} órdenes en el detalle.</p>`:''}
             ${!corte?'<p class="mt-3 text-sky-300 text-sm">Para agregar una actualización, ejecutá el Python en modo 2 con uno o más reportes completos del día.</p>':''}
         </section>
         <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             ${tarjeta('Saldo de la mañana',inicial,'Suma de saldos iniciales informados','text-slate-100')}
             ${tarjeta('Movimientos incorporados',delta,`Entradas ${dinero(entradas)} · Salidas ${dinero(salidas)}. Neto de todas las cuentas seleccionadas.`,color(delta))}
             ${tarjeta('Saldo estimado',estimado,'Base + movimientos de cuentas con saldo inicial informado','text-violet-300')}
-            ${tarjeta('Compromisos netos a 24 horas',futuro,'Negativo: pagos · Positivo: cobros. Separados del CI.',color(futuro))}
+            ${tarjeta('Compromisos futuros netos',futuro,'Negativo: pagos · Positivo: cobros. Liquidación posterior a hoy, separada del CI.',color(futuro))}
         </section>
         <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-400 px-1">
-            <span>${conocidas.length.toLocaleString('es-AR')} cuentas con saldo inicial</span>
+            <span>${filas.length.toLocaleString('es-AR')} cuentas del clúster bajo los filtros · ${conocidas.length.toLocaleString('es-AR')} con saldo inicial informado</span>
+            <span>${cuentasConSaldo.toLocaleString('es-AR')} cuentas con saldo inicial o estimado distinto de cero en esta moneda</span>
+            <span>${cuentasConOperaciones.toLocaleString('es-AR')} cuentas con operaciones CI o futuras · ${cuentasSoloRevision.toLocaleString('es-AR')} solo para revisar en esta moneda</span>
             <span class="${sinBase?'text-amber-300':''}">${sinBase.toLocaleString('es-AR')} sin saldo inicial informado: movimientos incluidos, saldo absoluto no calculable</span>
             <span class="text-amber-300">${revisiones.toLocaleString('es-AR')} movimientos pendientes o para revisar en la moneda seleccionada</span>
         </div>
-        <section class="card rounded-2xl p-5"><h3 class="text-sm font-bold text-white">Evolución intradiaria del saldo estimado</h3><p class="text-xs text-slate-400 mt-1">Foto de la mañana y estimaciones hasta la actualización seleccionada. Horarios de procesamiento, sin actualización en vivo.</p><div class="h-72 mt-4 relative"><canvas id="graficoIntradia"></canvas></div></section>
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <section class="card rounded-2xl p-5 lg:col-span-7"><h3 class="text-sm font-bold text-white">Evolución intradiaria del saldo estimado</h3><p class="text-xs text-slate-400 mt-1">Foto de la mañana y estimaciones hasta la actualización seleccionada. Horarios de procesamiento, sin actualización en vivo.</p><div class="h-72 mt-4 relative"><canvas id="graficoIntradia"></canvas></div></section>
+            <section class="card rounded-2xl p-5 lg:col-span-5"><h3 class="text-sm font-bold text-white">Distribución del saldo estimado por FA</h3><p class="text-xs text-slate-400 mt-1">Saldos positivos de las cuentas filtradas · ${dinero(totalDistribucionFA)}. Los negativos quedan fuera de la torta.</p><div class="h-72 mt-4 relative">${distribucionFA.length?'<canvas id="graficoFAIntradia"></canvas>':'<p class="h-full flex items-center justify-center text-sm text-slate-500">No hay saldos positivos en esta selección.</p>'}</div></section>
+        </div>
         <section class="card rounded-2xl p-5">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-4"><div><h3 class="text-sm font-bold text-white">Saldo estimado por cliente</h3><p class="text-xs text-slate-500 mt-1">Tocá una columna para ordenar de mayor a menor o de menor a mayor. Por defecto: magnitud del movimiento CI. Los filtros superiores gobiernan los totales y el gráfico.</p></div>
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4"><div><h3 class="text-sm font-bold text-white">Saldo estimado por cliente</h3><p class="text-xs text-slate-500 mt-1">Se muestran todas las cuentas con saldo al inicio o al cierre, hayan operado o no. Las que empiezan y terminan en cero quedan fuera de esta vista. Movimiento indica el neto; tocá una columna para ordenar. Los filtros superiores gobiernan los totales y el gráfico.</p></div>
             <select class="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs" onchange="elegirClientesIntradia(this.value)">
-                ${[['movimientos','Clientes con movimientos'],['todos','Todos los clientes'],['negativos','Estimados negativos']].map(([v,l])=>`<option value="${v}" ${modoClientesIntradia===v?'selected':''}>${l}</option>`).join('')}
+                ${[['saldos','Con saldo inicial o estimado'],['movimientos','Con actividad o revisión'],['todos','Todos los clientes (incluye cero)'],['negativos','Estimados negativos']].map(([v,l])=>`<option value="${v}" ${modoClientesIntradia===v?'selected':''}>${l}</option>`).join('')}
             </select></div>
             <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="text-slate-400 bg-slate-900"><tr>
-                ${encabezado('cuenta','Cliente / Comitente')}${encabezado('asesor','Asesor')}${encabezado('inicial','Base',true)}${encabezado('delta','Movimiento',true)}${encabezado('estimado','Estimado',true)}${encabezado('futuro','Compromiso 24h',true)}${encabezado('revision','Revisión')}<th class="p-3"></th>
-            </tr></thead><tbody class="divide-y divide-slate-800">${pagina.map(c=>`<tr class="hover:bg-slate-800/50"><td class="p-3 font-medium text-slate-200">${escIntradia(c.cuenta)}<span class="block text-[10px] text-slate-500">${escIntradia(c.comitente)}</span></td><td class="p-3 text-slate-400">${escIntradia(c.asesor)}</td><td class="p-3 text-right whitespace-nowrap">${dinero(c.inicial)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.delta)}">${dinero(c.delta)}</td><td class="p-3 text-right whitespace-nowrap font-bold ${c.estimado<0?'text-rose-300':'text-violet-200'}">${dinero(c.estimado)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.futuro)}">${dinero(c.futuro)}</td><td class="p-3 text-amber-300">${c.inicial==null?'Sin base':c.revision?`${c.revision} movimientos`:'—'}</td><td class="p-3"><button data-cliente-intradia="${escIntradia(c.id)}" class="text-sky-300 whitespace-nowrap hover:underline">Ver movimientos</button></td></tr>`).join('') || '<tr><td colspan="8" class="p-8 text-center text-slate-500">No hay clientes para esta selección.</td></tr>'}</tbody></table></div>
+                ${encabezado('cuenta','Cliente / Comitente')}${encabezado('asesor','Asesor')}${encabezado('inicial','Base',true)}${encabezado('delta','Movimiento neto',true)}${encabezado('estimado','Estimado',true)}${encabezado('futuro','Compromiso futuro',true)}${encabezado('incluidas','Operaciones',true)}${encabezado('revision','Revisión')}<th class="p-3"></th>
+            </tr></thead><tbody class="divide-y divide-slate-800">${pagina.map(c=>`<tr class="hover:bg-slate-800/50"><td class="p-3 font-medium text-slate-200">${escIntradia(c.cuenta)}<span class="block text-[10px] text-slate-500">${escIntradia(c.comitente)}</span></td><td class="p-3 text-slate-400">${escIntradia(c.asesor)}</td><td class="p-3 text-right whitespace-nowrap">${dinero(c.inicial)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.delta)}">${dinero(c.delta)}</td><td class="p-3 text-right whitespace-nowrap font-bold ${c.estimado<0?'text-rose-300':'text-violet-200'}">${dinero(c.estimado)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.futuro)}">${dinero(c.futuro)}</td><td class="p-3 text-right tabular-nums" title="Operaciones CI o futuras incorporadas">${c.incluidas.toLocaleString('es-AR')}</td><td class="p-3 text-amber-300">${c.inicial==null?'Sin base':c.revision?`${c.revision} movimientos`:'—'}</td><td class="p-3"><button data-cliente-intradia="${escIntradia(c.id)}" class="text-sky-300 whitespace-nowrap hover:underline">Ver movimientos</button></td></tr>`).join('') || '<tr><td colspan="9" class="p-8 text-center text-slate-500">No hay clientes para esta selección.</td></tr>'}</tbody></table></div>
             ${paginadorIntradia('clientes',paginaClientesIntradia,paginas,tabla.length)}
         </section>
         <details id="detalleIntradia" class="card rounded-2xl p-5" ${detalleIntradiaAbierto?'open':''}>
@@ -196,4 +229,12 @@ function renderizarIntradia() {
         type:'line', data:{labels:[`Base ${base.corte.slice(0,5)}`, ...cortes.slice(0,indice+1).map(c=>horaIntradia(c.generado))], datasets:[{label:'Saldo estimado',data:puntos,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.12)',pointBackgroundColor:'#a78bfa',pointBorderColor:'#ede9fe',pointBorderWidth:2,pointRadius:5,fill:true,tension:0}]},
         options:{responsive:true,maintainAspectRatio:false,layout:{padding:{top:30,left:24,right:50}},scales:{x:{ticks:{color:'#94a3b8'},grid:{color:'#1e293b'}},y:{grace:'18%',ticks:{color:'#94a3b8',callback:v=>formatAbrev(v,prefijo+' ')},grid:{color:'#1e293b'}}},plugins:{legend:{display:false},datalabels:{display:puntos.length<=10,align:'top',anchor:'end',offset:8,clip:false,color:'#ddd6fe',font:{size:10,weight:'bold'},formatter:v=>v==null?'':formatAbrev(v,prefijo+' ')},tooltip:{callbacks:{label:ctx=>' Estimación parcial: '+dinero(ctx.parsed.y)}}}}
     });
+    if (distribucionFA.length) {
+        const paleta = ['#800000','#ea580c','#0284c7','#1e3a8a','#d97706','#9333ea','#10b981','#06b6d4','#f43f5e','#8b5cf6','#eab308','#14b8a6','#6366f1','#ec4899','#0d9488','#64748b'];
+        graficoFAIntradia = new Chart(document.getElementById('graficoFAIntradia'), {
+            type:'doughnut',
+            data:{labels:distribucionFA.map(([fa])=>fa),datasets:[{data:distribucionFA.map(([,saldo])=>saldo),backgroundColor:distribucionFA.map((_,i)=>paleta[i%paleta.length])}]},
+            options:{responsive:true,maintainAspectRatio:false,plugins:{datalabels:{display:false},legend:{position:'right',labels:{color:'#cbd5e1',boxWidth:10,font:{size:10}}},tooltip:{callbacks:{label:ctx=>` ${ctx.label}: ${dinero(ctx.raw)} (${(ctx.raw/totalDistribucionFA*100).toFixed(1)}%)`}}}}
+        });
+    }
 }
