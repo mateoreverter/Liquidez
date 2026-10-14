@@ -10,6 +10,7 @@ let detalleIntradiaAbierto = false;
 let firmaFiltroIntradia = '';
 let ordenClientesIntradia = 'estimado';
 let direccionOrdenClientesIntradia = 'desc';
+let datosExportacionIntradia = null;
 const TAM_PAGINA_INTRADIA = 50;
 const ESTADOS_INTRADIA = {ci: 'Incluida CI', futuro: 'Compromiso futuro', revisar: 'Revisar', pendiente: 'Pendiente', sin_ejecucion: 'Sin ejecución', sin_efectivo: 'Sin efectivo', fuera_base: 'Fuera de la base'};
 
@@ -35,6 +36,36 @@ function ordenarClientesIntradia(columna) {
     }
     paginaClientesIntradia = 0;
     renderizarIntradia();
+}
+function exportarIntradiaExcel(boton) {
+    const exportacion = datosExportacionIntradia;
+    if (!exportacion || tabActual !== 'intradia') {
+        mostrarEstadoExportacion(boton, 'No hay datos listos para exportar en esta vista.');
+        return;
+    }
+    mostrarEstadoExportacion(boton, `Preparando Excel de ${exportacion.filas.length.toLocaleString('es-AR')} cuentas…`);
+    const etiqueta = boton.textContent;
+    boton.disabled = true;
+    boton.textContent = 'Preparando Excel…';
+    setTimeout(() => {
+        try {
+            descargarExcelSaldos({
+                botonOrigen: boton,
+                titulo: 'Saldo estimado por cliente',
+                metadata: `Base: ${exportacion.fecha} · Corte: ${exportacion.corte} · Actualización: ${exportacion.actualizacion} · Moneda: ${exportacion.moneda} · ${exportacion.filas.length} cuentas · Filtros seleccionados en el dashboard`,
+                encabezados: ['Cliente','Comitente','FA','Asesor','Negocio','Base','Movimiento neto','Estimado','Compromiso futuro','Operaciones incorporadas','Movimientos para revisar'],
+                filas: exportacion.filas,
+                columnasImporte: [5,6,7,8],
+                nombre: `liquidez_intradiaria_${exportacion.fecha}_${exportacion.moneda}.xlsx`
+            });
+        } catch (error) {
+            console.error('No se pudo iniciar la exportación:', error);
+            mostrarEstadoExportacion(boton, `No se pudo iniciar la exportación: ${error.message || error}`);
+        } finally {
+            boton.disabled = false;
+            boton.textContent = etiqueta;
+        }
+    }, 50);
 }
 function elegirEstadoIntradia(v) { filtroEstadoIntradia = v; paginaOrdenesIntradia = 0; detalleIntradiaAbierto = true; renderizarIntradia(); }
 function paginarIntradia(tipo, delta) {
@@ -136,6 +167,13 @@ function renderizarIntradia() {
         const comparacion = typeof va === 'string' ? compararTexto(va,vb) : va-vb;
         return (direccionOrdenClientesIntradia === 'asc' ? comparacion : -comparacion) || compararTexto(a.cuenta,b.cuenta);
     });
+    datosExportacionIntradia = {
+        fecha: base.fecha, corte: base.corte,
+        actualizacion: corte ? formatearFechaActualizacion(corte.generado) : 'Solo base',
+        moneda: monedaFiltro,
+        filas: tabla.map(c => [c.cuenta || '',String(c.comitente || ''),c.fa || '',c.asesor || '',c.negocio || '',
+            c.inicial,c.delta,c.estimado,c.futuro,c.incluidas,c.revision])
+    };
     const paginas = Math.max(1,Math.ceil(tabla.length/TAM_PAGINA_INTRADIA));
     paginaClientesIntradia = Math.min(Math.max(0,paginaClientesIntradia),paginas-1);
     const pagina = tabla.slice(paginaClientesIntradia*TAM_PAGINA_INTRADIA,(paginaClientesIntradia+1)*TAM_PAGINA_INTRADIA);
@@ -205,9 +243,9 @@ function renderizarIntradia() {
         </div>
         <section class="card rounded-2xl p-5">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4"><div><h3 class="text-sm font-bold text-white">Saldo estimado por cliente</h3><p class="text-xs text-slate-500 mt-1">Se muestran todas las cuentas con saldo al inicio o al cierre, hayan operado o no. Las que empiezan y terminan en cero quedan fuera de esta vista. Movimiento indica el neto; tocá una columna para ordenar. Los filtros superiores gobiernan los totales y el gráfico.</p></div>
-            <select class="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs" onchange="elegirClientesIntradia(this.value)">
+            <div class="flex flex-wrap items-center gap-2"><button type="button" onclick="exportarIntradiaExcel(this)" ${!tabla.length?'disabled':''} class="text-xs text-violet-200 border border-violet-600 rounded-lg px-3 py-2 hover:bg-violet-950 disabled:opacity-40">⬇ Exportar Excel (${tabla.length.toLocaleString('es-AR')})</button><select class="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs" onchange="elegirClientesIntradia(this.value)">
                 ${[['saldos','Con saldo inicial o estimado'],['movimientos','Con actividad o revisión'],['todos','Todos los clientes (incluye cero)'],['negativos','Estimados negativos']].map(([v,l])=>`<option value="${v}" ${modoClientesIntradia===v?'selected':''}>${l}</option>`).join('')}
-            </select></div>
+            </select></div></div>
             <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="text-slate-400 bg-slate-900"><tr>
                 ${encabezado('cuenta','Cliente / Comitente')}${encabezado('asesor','Asesor')}${encabezado('inicial','Base',true)}${encabezado('delta','Movimiento neto',true)}${encabezado('estimado','Estimado',true)}${encabezado('futuro','Compromiso futuro',true)}${encabezado('incluidas','Operaciones',true)}${encabezado('revision','Revisión')}<th class="p-3"></th>
             </tr></thead><tbody class="divide-y divide-slate-800">${pagina.map(c=>`<tr class="hover:bg-slate-800/50"><td class="p-3 font-medium text-slate-200">${escIntradia(c.cuenta)}<span class="block text-[10px] text-slate-500">${escIntradia(c.comitente)}</span></td><td class="p-3 text-slate-400">${escIntradia(c.asesor)}</td><td class="p-3 text-right whitespace-nowrap">${dinero(c.inicial)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.delta)}">${dinero(c.delta)}</td><td class="p-3 text-right whitespace-nowrap font-bold ${c.estimado<0?'text-rose-300':'text-violet-200'}">${dinero(c.estimado)}</td><td class="p-3 text-right whitespace-nowrap ${color(c.futuro)}">${dinero(c.futuro)}</td><td class="p-3 text-right tabular-nums" title="Operaciones CI o futuras incorporadas">${c.incluidas.toLocaleString('es-AR')}</td><td class="p-3 text-amber-300">${c.inicial==null?'Sin base':c.revision?`${c.revision} movimientos`:'—'}</td><td class="p-3"><button data-cliente-intradia="${escIntradia(c.id)}" class="text-sky-300 whitespace-nowrap hover:underline">Ver movimientos</button></td></tr>`).join('') || '<tr><td colspan="9" class="p-8 text-center text-slate-500">No hay clientes para esta selección.</td></tr>'}</tbody></table></div>

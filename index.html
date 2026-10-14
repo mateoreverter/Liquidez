@@ -181,6 +181,146 @@
         let historialEsPorCliente = false;
         let clienteSeleccionadoId = '';
         let listaClientesVisibles = [];
+        let ordenLiq = 'saldo';
+        let direccionOrdenLiq = 'desc';
+        let paginaLiq = 0;
+        let firmaFiltrosLiq = '';
+        let datosExportacionDescubiertos = null;
+        let urlExcelActivo = null;
+        const AVISO_EXCEL_SALDOS = 'Estos saldos son estimaciones. Verificá los importes en el comitente antes de utilizarlos.';
+
+        function ordenarLiq(columna) {
+            if (!['cuenta', 'asesor', 'saldo', 'mepBend', 'porcentaje', 'ratio'].includes(columna)) return;
+            if (ordenLiq === columna) direccionOrdenLiq = direccionOrdenLiq === 'asc' ? 'desc' : 'asc';
+            else {
+                ordenLiq = columna;
+                direccionOrdenLiq = ['cuenta', 'asesor'].includes(columna) ? 'asc' : 'desc';
+            }
+            paginaLiq = 0;
+            renderizarTabActual();
+        }
+        function paginarLiq(cambio) { paginaLiq += cambio; renderizarTabActual(); }
+
+        function mostrarEstadoExportacion(boton, mensaje) {
+            const zona = boton?.parentElement || document.body;
+            let estado = zona.querySelector('.estado-exportacion');
+            if (!estado) {
+                estado = document.createElement('span');
+                estado.className = 'estado-exportacion text-xs text-sky-300';
+                zona.appendChild(estado);
+            }
+            estado.textContent = mensaje;
+            return estado;
+        }
+
+        function exportarDescubiertosExcel(boton) {
+            const exportacion = datosExportacionDescubiertos;
+            if (!exportacion || tabActual !== 'descubiertos') {
+                mostrarEstadoExportacion(boton, 'No hay datos listos para exportar en esta vista.');
+                return;
+            }
+            const {filas, moneda, fecha, encabezados} = exportacion;
+            mostrarEstadoExportacion(boton, `Preparando Excel de ${filas.length.toLocaleString('es-AR')} cuentas…`);
+            const etiqueta = boton.textContent;
+            boton.disabled = true;
+            boton.textContent = 'Preparando Excel…';
+            setTimeout(() => {
+              try { descargarExcelSaldos({
+                botonOrigen: boton,
+                titulo: 'Saldos descubiertos por cliente',
+                metadata: `Cluster: ${fecha} · Moneda: ${moneda} · ${filas.length} cuentas · Filtros seleccionados en el dashboard`,
+                encabezados,
+                filas,
+                columnasImporte: [5],
+                columnasPorcentaje: encabezados.length === 9 ? [7,8] : [6,7],
+                nombre: `saldos_descubiertos_${fecha}_${moneda}.xlsx`
+              }); } catch (error) {
+                  console.error('No se pudo iniciar la exportación:', error);
+                  mostrarEstadoExportacion(boton, `No se pudo iniciar la exportación: ${error.message || error}`);
+              } finally { boton.disabled = false; boton.textContent = etiqueta; }
+            }, 50);
+        }
+
+        // XLSX mínimo sin servicios externos: las celdas de texto no se ejecutan como fórmulas.
+        function descargarExcelSaldos({botonOrigen, titulo, metadata, encabezados, filas, columnasImporte=[], columnasPorcentaje=[], nombre}) {
+            const estado = mostrarEstadoExportacion(botonOrigen || document.activeElement,
+                `Preparando Excel de ${filas.length.toLocaleString('es-AR')} cuentas…`);
+            try {
+            const xml = valor => String(valor ?? '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f&<>"']/g,
+                c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c] || ''));
+            const letras = n => { let s = ''; for (n++; n; n = Math.floor((n-1)/26)) s = String.fromCharCode(65+(n-1)%26)+s; return s; };
+            const celda = (v, ref, estilo=0) => {
+                if (v == null || v === '') return '';
+                if (typeof v === 'number' && Number.isFinite(v)) return `<c r="${ref}" s="${estilo}"><v>${v}</v></c>`;
+                return `<c r="${ref}" s="${estilo}" t="inlineStr"><is><t xml:space="preserve">${xml(v)}</t></is></c>`;
+            };
+            const numeroColumnas = encabezados.length;
+            const ultimaColumna = letras(numeroColumnas-1);
+            const ancho = encabezados.map((h,i) => `<col min="${i+1}" max="${i+1}" width="${Math.min(42,Math.max(16,String(h).length+5))}" customWidth="1"/>`).join('');
+            const filasXml = [
+                `<row r="1">${celda(titulo,'A1',4)}</row>`,
+                `<row r="2">${celda(AVISO_EXCEL_SALDOS,'A2',4)}</row>`,
+                `<row r="3">${celda(metadata,'A3')}</row>`,
+                `<row r="5">${encabezados.map((h,i)=>celda(h,letras(i)+'5',3)).join('')}</row>`
+            ];
+            filas.forEach((fila,i) => {
+                const indice = i+6;
+                filasXml.push(`<row r="${indice}">${fila.map((v,j)=>celda(v,letras(j)+indice,
+                    columnasImporte.includes(j)?1:columnasPorcentaje.includes(j)?2:0)).join('')}</row>`);
+            });
+            const hoja = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${ultimaColumna}${Math.max(5,filas.length+5)}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${ancho}</cols><sheetData>${filasXml.join('')}</sheetData><autoFilter ref="A5:${ultimaColumna}${Math.max(5,filas.length+5)}"/><mergeCells count="3"><mergeCell ref="A1:${ultimaColumna}1"/><mergeCell ref="A2:${ultimaColumna}2"/><mergeCell ref="A3:${ultimaColumna}3"/></mergeCells></worksheet>`;
+            const estilos = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.00%"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+            const archivos = {
+                '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
+                '_rels/.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+                'xl/workbook.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Saldos por cliente" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+                'xl/_rels/workbook.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+                'xl/styles.xml': estilos,
+                'xl/worksheets/sheet1.xml': hoja
+            };
+            const enc = new TextEncoder();
+            const tablaCrc = Array.from({length:256},(_,n)=>{ for(let k=0;k<8;k++) n = (n&1)?(0xedb88320^(n>>>1)):(n>>>1); return n>>>0; });
+            const u16 = (vista,pos,n) => vista.setUint16(pos,n,true);
+            const u32 = (vista,pos,n) => vista.setUint32(pos,n>>>0,true);
+            const partes = [], centrales = [];
+            let posicion = 0;
+            Object.entries(archivos).forEach(([ruta,contenido]) => {
+                const nombreBytes = enc.encode(ruta), datos = enc.encode(contenido);
+                let crc = 0xffffffff;
+                for(const b of datos) crc = tablaCrc[(crc^b)&255]^(crc>>>8);
+                crc = (crc^0xffffffff)>>>0;
+                const local = new Uint8Array(30+nombreBytes.length), vl = new DataView(local.buffer);
+                u32(vl,0,0x04034b50); u16(vl,4,20); u16(vl,8,0); u32(vl,14,crc); u32(vl,18,datos.length); u32(vl,22,datos.length); u16(vl,26,nombreBytes.length); local.set(nombreBytes,30);
+                partes.push(local,datos);
+                const central = new Uint8Array(46+nombreBytes.length), vc = new DataView(central.buffer);
+                u32(vc,0,0x02014b50); u16(vc,4,20); u16(vc,6,20); u32(vc,16,crc); u32(vc,20,datos.length); u32(vc,24,datos.length); u16(vc,28,nombreBytes.length); u32(vc,42,posicion); central.set(nombreBytes,46);
+                centrales.push(central); posicion += local.length+datos.length;
+            });
+            const centralLongitud = centrales.reduce((n,p)=>n+p.length,0), final = new Uint8Array(22), vf = new DataView(final.buffer);
+            u32(vf,0,0x06054b50); u16(vf,8,centrales.length); u16(vf,10,centrales.length); u32(vf,12,centralLongitud); u32(vf,16,posicion);
+            const blob = new Blob([...partes,...centrales,final],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+            if (urlExcelActivo) URL.revokeObjectURL(urlExcelActivo);
+            const url = URL.createObjectURL(blob), enlace = document.createElement('a');
+            urlExcelActivo = url;
+            enlace.href = url;
+            enlace.download = nombre;
+            enlace.className = 'underline font-semibold hover:text-white';
+            enlace.textContent = 'Descargar archivo';
+            estado.textContent = 'Excel preparado. Si no se descargó: ';
+            estado.appendChild(enlace);
+            try { enlace.click(); } catch (error) { console.warn('Usá el enlace visible para descargar el Excel:', error); }
+            setTimeout(() => {
+                if (urlExcelActivo === url) {
+                    URL.revokeObjectURL(url);
+                    urlExcelActivo = null;
+                    estado.textContent = 'El enlace venció. Tocá Exportar Excel para generarlo otra vez.';
+                }
+            }, 600000);
+            } catch (error) {
+                console.error('No se pudo exportar el Excel:', error);
+                estado.textContent = `No se pudo generar el Excel: ${error.message || error}`;
+            }
+        }
         // Referencias facilitadas el 30/09/2026 para el histórico anterior al
         // guardado del TC del cluster. Nunca reemplazan un TC ya registrado.
         const referenciasMepHistoricas = Object.freeze({
@@ -1045,7 +1185,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                         ? 'Saldos descubiertos en MEP por cliente'
                         : 'Liquidez en MEP por cliente';
                     prefixMoneda = 'USD';
-                    colExtra = '<th class="p-2.5 text-right">MEP Bendecidos</th>';
+                    colExtra = true;
                 } else if (monedaSel === 'Cable_CV7000') {
                     colTarget = esDescubiertos ? 'CABLE_CI' : 'CABLE_CV7000';
                     labelHeader = esDescubiertos ? 'Cable CI' : 'Cable + CV7000';
@@ -1106,30 +1246,78 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                 const claseAyuda = esDescubiertos
                     ? 'text-rose-300 bg-rose-950/50'
                     : 'text-sky-400 bg-sky-950/60';
+                const cabeceraOrdenable = (clave, texto, derecha=false, extra='') => {
+                    const activa = ordenLiq === clave;
+                    const flecha = activa ? (direccionOrdenLiq === 'asc' ? '▲' : '▼') : '↕';
+                    return `<th class="p-2.5 ${derecha?'text-right':''} ${extra}" aria-sort="${activa ? (direccionOrdenLiq === 'asc' ? 'ascending' : 'descending') : 'none'}"><button type="button" onclick="ordenarLiq('${clave}')" title="Ordenar por ${texto}" class="w-full flex items-center gap-1 ${derecha?'justify-end':''} hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 rounded">${texto}<span aria-hidden="true" class="text-[10px] ${activa?'text-sky-300':'text-slate-600'}">${flecha}</span></button></th>`;
+                };
+                const porcentajeLiq = r => totalLiquidezUniverso > 0
+                    ? (esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget]) / totalLiquidezUniverso : 0;
+                const ratioLiq = r => {
+                    const aum = mapAUMTotalPorAsesor[r.asesor] || 0;
+                    if (aum <= 0) return 0;
+                    const saldo = esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget];
+                    return (monedaSel === 'ARS' ? saldo / (r.TC_MEP || 1540.0) : saldo) / aum;
+                };
+                const valoresOrdenLiq = {
+                    cuenta: r => r.cuenta || '', asesor: r => r.asesor || '',
+                    saldo: r => esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget],
+                    mepBend: r => r.MEP_BEND, porcentaje: porcentajeLiq, ratio: ratioLiq
+                };
+                const compararNombres = new Intl.Collator('es-AR', {numeric:true,sensitivity:'base'}).compare;
+                const sortedLiq = [...data].sort((a,b) => {
+                    const va = valoresOrdenLiq[ordenLiq](a), vb = valoresOrdenLiq[ordenLiq](b);
+                    const comparacion = typeof va === 'string' ? compararNombres(va,vb) : va-vb;
+                    return (direccionOrdenLiq === 'asc' ? comparacion : -comparacion)
+                        || compararNombres(a.cuenta || '',b.cuenta || '')
+                        || compararNombres(String(a.comitenteNumero || ''),String(b.comitenteNumero || ''));
+                });
+                const firmaActualLiq = JSON.stringify([tabActual,monedaSel,
+                    document.getElementById('filtroFA').value,document.getElementById('filtroNegocio').value,
+                    [...asesoresSeleccionados].sort(),clienteSeleccionadoId]);
+                if (firmaActualLiq !== firmaFiltrosLiq) { paginaLiq = 0; firmaFiltrosLiq = firmaActualLiq; }
+                const paginasLiq = Math.max(1,Math.ceil(sortedLiq.length/60));
+                paginaLiq = Math.min(Math.max(0,paginaLiq),paginasLiq-1);
+                const desdeLiq = paginaLiq*60;
+                datosExportacionDescubiertos = esDescubiertos ? {
+                    moneda: monedaSel === 'Cable_CV7000' ? 'Cable_CI' : monedaSel,
+                    fecha: typeof fechaCorteCluster === 'undefined' ? 'sin_fecha' : fechaCorteCluster,
+                    encabezados: ['Cuenta','Comitente','FA','Asesor','Negocio',labelHeader,
+                        ...(monedaSel === 'MEP' ? ['MEP Bendecidos'] : []),etiquetaPorcentaje,etiquetaRatio],
+                    filas: sortedLiq.map(r => [r.cuenta || '',String(r.comitenteNumero || ''),r.FA || '',r.asesor || '',r.negocio || '',
+                        r[colTarget],...(monedaSel === 'MEP' ? [r.MEP_BEND] : []),porcentajeLiq(r),ratioLiq(r)])
+                } : null;
 
                 container.innerHTML = `
                     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
                         <div class="lg:col-span-7 card p-5 rounded-2xl flex flex-col justify-between">
                             <div>
-                                <div class="flex justify-between items-center mb-3">
+                                <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
                                     <h3 class="text-sm font-bold text-white">${titleLeft}</h3>
-                                    <span class="text-xs ${claseAyuda} font-semibold px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        ${esDescubiertos ? `<button type="button" onclick="exportarDescubiertosExcel(this)" ${!sortedLiq.length?'disabled':''} class="text-xs text-sky-200 border border-sky-700 rounded-lg px-3 py-1.5 hover:bg-sky-950 disabled:opacity-40">⬇ Exportar Excel (${sortedLiq.length.toLocaleString('es-AR')})</button>` : ''}
+                                        <span class="text-xs ${claseAyuda} font-semibold px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
+                                    </div>
                                 </div>
                                 <div class="overflow-y-auto max-h-[520px]">
                                     <table class="w-full text-xs text-left text-slate-300">
                                         <thead class="bg-slate-900 text-slate-400 uppercase sticky top-0">
                                             <tr>
-                                                <th class="p-2.5">Cuenta</th>
-                                                <th class="p-2.5">Asesor</th>
-                                                <th class="p-2.5 text-right">${labelHeader}</th>
-                                                ${colExtra}
-                                                <th class="p-2.5 text-right">${etiquetaPorcentaje}</th>
-                                                <th class="p-2.5 text-right ${esDescubiertos ? 'text-rose-300' : 'text-sky-300'}" title="Relatividad entre el saldo del cliente y el AUM total del asesor">${etiquetaRatio}</th>
+                                                ${cabeceraOrdenable('cuenta','Cuenta')}
+                                                ${cabeceraOrdenable('asesor','Asesor')}
+                                                ${cabeceraOrdenable('saldo',labelHeader,true)}
+                                                ${colExtra ? cabeceraOrdenable('mepBend','MEP Bendecidos',true) : ''}
+                                                ${cabeceraOrdenable('porcentaje',etiquetaPorcentaje,true)}
+                                                ${cabeceraOrdenable('ratio',etiquetaRatio,true,esDescubiertos ? 'text-rose-300' : 'text-sky-300')}
                                             </tr>
                                         </thead>
                                         <tbody id="tablaLiq" class="divide-y divide-slate-800"></tbody>
                                     </table>
                                 </div>
+                            </div>
+                            <div class="pt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                                <span>Mostrando ${sortedLiq.length?`${(desdeLiq+1).toLocaleString('es-AR')}–${Math.min(desdeLiq+60,sortedLiq.length).toLocaleString('es-AR')}`:'0'} de ${sortedLiq.length.toLocaleString('es-AR')} cuentas · Página ${paginaLiq+1} de ${paginasLiq}</span>
+                                <div class="flex gap-2"><button type="button" onclick="paginarLiq(-1)" ${paginaLiq===0?'disabled':''} class="border border-slate-700 rounded px-2 py-1 hover:bg-slate-800 disabled:opacity-30">Anterior</button><button type="button" onclick="paginarLiq(1)" ${paginaLiq>=paginasLiq-1?'disabled':''} class="border border-slate-700 rounded px-2 py-1 hover:bg-slate-800 disabled:opacity-30">Siguiente</button></div>
                             </div>
                             <div class="pt-4 mt-2 border-t border-slate-800 flex justify-between font-bold text-sm text-white">
                                 <span>${tituloTotal}</span>
@@ -1180,25 +1368,11 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     </div>
                 `;
 
-                const sortedLiq = [...data].sort((a, b) => esDescubiertos
-                    ? a[colTarget] - b[colTarget]
-                    : b[colTarget] - a[colTarget]
-                );
-                const filasTabla = sortedLiq.slice(0, 60).map(r => {
-                    const valorParticipacion = esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget];
-                    const pct = totalLiquidezUniverso > 0 ? ((valorParticipacion / totalLiquidezUniverso) * 100).toFixed(2) : '0.00';
+                const filasTabla = sortedLiq.slice(desdeLiq, desdeLiq+60).map(r => {
+                    const pct = (porcentajeLiq(r)*100).toFixed(2);
                     
                     const aumAsesor = mapAUMTotalPorAsesor[r.asesor] || 0;
-                    let pctLiqVsAUM = "0.00";
-                    if (aumAsesor > 0) {
-                        const saldoParaRatio = esDescubiertos ? Math.abs(r[colTarget]) : r[colTarget];
-                        if (monedaSel === 'ARS') {
-                            const liqEnUSD = saldoParaRatio / (r.TC_MEP || 1540.0);
-                            pctLiqVsAUM = ((liqEnUSD / aumAsesor) * 100).toFixed(2);
-                        } else {
-                            pctLiqVsAUM = ((saldoParaRatio / aumAsesor) * 100).toFixed(2);
-                        }
-                    }
+                    const pctLiqVsAUM = (ratioLiq(r)*100).toFixed(2);
 
                     return `
                         <tr class="hover:bg-slate-800/60 cursor-pointer select-none transition-colors"
