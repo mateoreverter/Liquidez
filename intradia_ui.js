@@ -37,26 +37,69 @@ function ordenarClientesIntradia(columna) {
     paginaClientesIntradia = 0;
     renderizarIntradia();
 }
-function exportarIntradiaExcel(boton) {
+function calcularFilasClientesIntradia(clientes, movimientos, monedas) {
+    return clientes.map(c => {
+        const valores = monedas.map(m => m === 'CV7000' && c.saldos?.[m] == null ? 0 : c.saldos?.[m]);
+        const inicial = valores.every(Number.isFinite) ? valores.reduce((a,v)=>a+v,0) : null;
+        const movimiento = indice => monedas.reduce((a,m)=>a+(movimientos?.[c.id]?.[m]?.[indice] || 0),0);
+        const delta = movimiento(0), futuro = movimiento(1), incluidas = movimiento(2), revision = movimiento(3);
+        return {...c, inicial, delta, futuro, incluidas, revision,
+            estimado: inicial == null ? null : inicial+delta,
+            tieneMovimientos: !!(delta || futuro || incluidas || revision)};
+    });
+}
+function mostrarSaldoClienteIntradia(c) {
+    const visible = valor => valor != null && Math.abs(valor) >= 0.005;
+    return visible(c.inicial) || visible(c.estimado) || (c.inicial == null && visible(c.delta));
+}
+function ordenarTablaClientesIntradia(filas) {
+    const tabla = filas.filter(c => modoClientesIntradia === 'todos'
+        || (modoClientesIntradia === 'negativos' ? c.estimado != null && c.estimado < -0.005
+            : modoClientesIntradia === 'movimientos' ? c.tieneMovimientos : mostrarSaldoClienteIntradia(c)));
+    const compararTexto = new Intl.Collator('es-AR', {numeric:true, sensitivity:'base'}).compare;
+    const valorOrden = c => ordenClientesIntradia === 'revision' ? (c.inicial == null ? null : c.revision) : c[ordenClientesIntradia];
+    tabla.sort((a,b) => {
+        if (ordenClientesIntradia === 'magnitud') {
+            return Math.abs(b.delta)-Math.abs(a.delta) || b.incluidas-a.incluidas || b.revision-a.revision
+                || Math.abs(b.futuro)-Math.abs(a.futuro) || compararTexto(a.cuenta,b.cuenta);
+        }
+        const va = valorOrden(a), vb = valorOrden(b);
+        if (va == null || vb == null) return (va == null ? 1 : 0)-(vb == null ? 1 : 0) || compararTexto(a.cuenta,b.cuenta);
+        const comparacion = typeof va === 'string' ? compararTexto(va,vb) : va-vb;
+        return (direccionOrdenClientesIntradia === 'asc' ? comparacion : -comparacion) || compararTexto(a.cuenta,b.cuenta);
+    });
+    return tabla;
+}
+function filaExcelIntradia(c) {
+    return [c.cuenta || '',String(c.comitente || ''),c.fa || '',c.asesor || '',c.negocio || '',
+        c.inicial,c.delta,c.estimado,c.futuro,c.incluidas,c.revision];
+}
+function exportarIntradiaExcel(boton, todas=false) {
     const exportacion = datosExportacionIntradia;
     if (!exportacion || tabActual !== 'intradia') {
         mostrarEstadoExportacion(boton, 'No hay datos listos para exportar en esta vista.');
         return;
     }
-    mostrarEstadoExportacion(boton, `Preparando Excel de ${exportacion.filas.length.toLocaleString('es-AR')} cuentas…`);
+    mostrarEstadoExportacion(boton, todas ? 'Preparando Excel de todas las monedas…'
+        : `Preparando Excel de ${exportacion.filas.length.toLocaleString('es-AR')} cuentas…`);
     const etiqueta = boton.textContent;
     boton.disabled = true;
     boton.textContent = 'Preparando Excel…';
     setTimeout(() => {
         try {
+            const monedasExportadas = [['ARS','ARS',['ARS']],['USD MEP','MEP',['MEP']],
+                ['USD Cable + CV7000','Cable_CV7000',['CABLE','CV7000']]];
+            const filas = todas ? monedasExportadas.flatMap(([etiqueta,,monedas]) =>
+                ordenarTablaClientesIntradia(calcularFilasClientesIntradia(exportacion.clientes,exportacion.movimientos,monedas))
+                    .map(c => [etiqueta,...filaExcelIntradia(c)])) : exportacion.filas;
             descargarExcelSaldos({
                 botonOrigen: boton,
-                titulo: 'Saldo estimado por cliente',
-                metadata: `Base: ${exportacion.fecha} · Corte: ${exportacion.corte} · Actualización: ${exportacion.actualizacion} · Moneda: ${exportacion.moneda} · ${exportacion.filas.length} cuentas · Filtros seleccionados en el dashboard`,
-                encabezados: ['Cliente','Comitente','FA','Asesor','Negocio','Base','Movimiento neto','Estimado','Compromiso futuro','Operaciones incorporadas','Movimientos para revisar'],
-                filas: exportacion.filas,
-                columnasImporte: [5,6,7,8],
-                nombre: `liquidez_intradiaria_${exportacion.fecha}_${exportacion.moneda}.xlsx`
+                titulo: todas ? 'Saldo estimado por cliente · Todas las monedas' : 'Saldo estimado por cliente',
+                metadata: `Base: ${exportacion.fecha} · Corte: ${exportacion.corte} · Actualización: ${exportacion.actualizacion} · ${todas ? 'ARS / USD MEP / USD Cable + CV7000 · Una fila por cliente y moneda, sin sumar monedas' : `Moneda: ${exportacion.moneda}`} · ${filas.length} filas · Filtros seleccionados en el dashboard`,
+                encabezados: [...(todas?['Moneda']:[]),'Cliente','Comitente','FA','Asesor','Negocio','Base','Movimiento neto','Estimado','Compromiso futuro','Operaciones incorporadas','Movimientos para revisar'],
+                filas,
+                columnasImporte: todas ? [6,7,8,9] : [5,6,7,8],
+                nombre: `liquidez_intradiaria_${exportacion.fecha}_${todas?'todas_monedas':exportacion.moneda}.xlsx`
             });
         } catch (error) {
             console.error('No se pudo iniciar la exportación:', error);
@@ -102,30 +145,19 @@ function renderizarIntradia() {
     const prefijo = monedaFiltro === 'ARS' ? '$' : 'USD';
     const dinero = v => v == null || !Number.isFinite(v) ? '—' : `${v<0?'−':''}${prefijo} ${fmt(Math.abs(v))}`;
     const color = v => v < 0 ? 'text-rose-300' : v > 0 ? 'text-emerald-300' : 'text-slate-400';
-    const fa = document.getElementById('filtroFA').value;
+    const equipo = document.getElementById('filtroEquipo').value;
     const negocio = document.getElementById('filtroNegocio').value;
     const todosAsesores = asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length;
-    const firma = JSON.stringify([monedaFiltro, fa, negocio, [...asesoresSeleccionados].sort(), clienteSeleccionadoId]);
+    const firma = JSON.stringify([monedaFiltro, equipo, [...fasSeleccionados].sort(), negocio, [...asesoresSeleccionados].sort(), clienteSeleccionadoId]);
     if (firma !== firmaFiltroIntradia) { paginaClientesIntradia = 0; paginaOrdenesIntradia = 0; firmaFiltroIntradia = firma; }
-    const clientes = base.clientes.filter(c => (fa === 'Todas' || c.fa === fa) && (negocio === 'Todas' || c.negocio === negocio)
+    const clientes = base.clientes.filter(c => faPasaFiltros(c.fa) && (negocio === 'Todas' || c.negocio === negocio)
         && (todosAsesores || asesoresSeleccionados.has(c.asesor)) && (!clienteSeleccionadoId || c.id === clienteSeleccionadoId));
     const ids = new Set(clientes.map(c => c.id));
     const indice = indiceCorteIntradia < 0 ? cortes.length-1 : Math.min(indiceCorteIntradia, cortes.length-1);
     const corte = cortes[indice];
     const movs = corte?.movimientos || {};
-    const saldoMoneda = (c,m) => m === 'CV7000' && c.saldos?.[m] == null ? 0 : c.saldos?.[m];
-    const sumarSaldos = valores => valores.every(Number.isFinite) ? valores.reduce((a,v)=>a+v,0) : null;
     const movimientoCorte = (fuente,id,indice) => monedas.reduce((a,m)=>a+(fuente?.[id]?.[m]?.[indice] || 0),0);
-    const filas = clientes.map(c => {
-        const inicial = sumarSaldos(monedas.map(m=>saldoMoneda(c,m)));
-        const delta = movimientoCorte(movs,c.id,0);
-        const futuro = movimientoCorte(movs,c.id,1);
-        const incluidas = movimientoCorte(movs,c.id,2);
-        const revision = movimientoCorte(movs,c.id,3);
-        return {...c, inicial, delta, futuro, incluidas, revision,
-            estimado: inicial == null ? null : inicial+delta,
-            tieneMovimientos: !!(delta || futuro || incluidas || revision)};
-    });
+    const filas = calcularFilasClientesIntradia(clientes,movs,monedas);
     const conocidas = filas.filter(c => c.inicial != null);
     const suma = campo => conocidas.length ? conocidas.reduce((a,c)=>a+c[campo],0) : null;
     const inicial = suma('inicial'), delta = filas.reduce((a,c)=>a+c.delta,0), estimado = suma('estimado');
@@ -137,10 +169,7 @@ function renderizarIntradia() {
     // La tabla muestra saldos, no actividad: dos operaciones que se cancelan
     // dejan fuera a una cuenta que empezó y terminó en cero. Una base vacía
     // permanece desconocida; solo se conserva si hay flujo CI neto conocido.
-    const saldoVisible = valor => valor != null && Math.abs(valor) >= 0.005;
-    const mostrarSaldo = c => saldoVisible(c.inicial) || saldoVisible(c.estimado)
-        || (c.inicial == null && saldoVisible(c.delta));
-    const cuentasConSaldo = filas.filter(mostrarSaldo).length;
+    const cuentasConSaldo = filas.filter(mostrarSaldoClienteIntradia).length;
     // La distribución replica la de Liquidez: suma saldos estimados positivos
     // por FA, respetando moneda, fecha y filtros de personas.
     const saldosPorFA = new Map();
@@ -152,32 +181,19 @@ function renderizarIntradia() {
     });
     const distribucionFA = [...saldosPorFA].sort((a,b) => b[1]-a[1]);
     const totalDistribucionFA = distribucionFA.reduce((a,[,valor]) => a+valor,0);
-    let tabla = filas.filter(c => modoClientesIntradia === 'todos'
-        || (modoClientesIntradia === 'negativos' ? c.estimado != null && c.estimado < -0.005
-            : modoClientesIntradia === 'movimientos' ? c.tieneMovimientos : mostrarSaldo(c)));
-    const compararTexto = new Intl.Collator('es-AR', {numeric:true, sensitivity:'base'}).compare;
-    const valorOrden = c => ordenClientesIntradia === 'revision' ? (c.inicial == null ? null : c.revision) : c[ordenClientesIntradia];
-    tabla.sort((a,b) => {
-        if (ordenClientesIntradia === 'magnitud') {
-            return Math.abs(b.delta)-Math.abs(a.delta) || b.incluidas-a.incluidas || b.revision-a.revision
-                || Math.abs(b.futuro)-Math.abs(a.futuro) || compararTexto(a.cuenta,b.cuenta);
-        }
-        const va = valorOrden(a), vb = valorOrden(b);
-        if (va == null || vb == null) return (va == null ? 1 : 0)-(vb == null ? 1 : 0) || compararTexto(a.cuenta,b.cuenta);
-        const comparacion = typeof va === 'string' ? compararTexto(va,vb) : va-vb;
-        return (direccionOrdenClientesIntradia === 'asc' ? comparacion : -comparacion) || compararTexto(a.cuenta,b.cuenta);
-    });
+    const tabla = ordenarTablaClientesIntradia(filas);
     datosExportacionIntradia = {
         fecha: base.fecha, corte: base.corte,
         actualizacion: corte ? formatearFechaActualizacion(corte.generado) : 'Solo base',
         moneda: monedaFiltro,
-        filas: tabla.map(c => [c.cuenta || '',String(c.comitente || ''),c.fa || '',c.asesor || '',c.negocio || '',
-            c.inicial,c.delta,c.estimado,c.futuro,c.incluidas,c.revision])
+        filas: tabla.map(filaExcelIntradia), clientes, movimientos: movs
     };
     const paginas = Math.max(1,Math.ceil(tabla.length/TAM_PAGINA_INTRADIA));
     paginaClientesIntradia = Math.min(Math.max(0,paginaClientesIntradia),paginas-1);
     const pagina = tabla.slice(paginaClientesIntradia*TAM_PAGINA_INTRADIA,(paginaClientesIntradia+1)*TAM_PAGINA_INTRADIA);
-    const sinFiltrosPersonas = fa === 'Todas' && negocio === 'Todas' && todosAsesores && !clienteSeleccionadoId;
+    const sinFiltrosPersonas = equipo === 'Todos' && listaFAsVisibles.length > 0
+        && fasSeleccionados.size === listaFAsVisibles.length && negocio === 'Todas'
+        && todosAsesores && !clienteSeleccionadoId;
     const ordenes = (corte?.ordenes || []).map(r => {
         const fila = Object.fromEntries(datosIntradia.camposOrden.map((k,i)=>[k,r[i]]));
         fila.fuente = fila.fuente || 'Órdenes';
@@ -243,7 +259,7 @@ function renderizarIntradia() {
         </div>
         <section class="card rounded-2xl p-5">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4"><div><h3 class="text-sm font-bold text-white">Saldo estimado por cliente</h3><p class="text-xs text-slate-500 mt-1">Se muestran todas las cuentas con saldo al inicio o al cierre, hayan operado o no. Las que empiezan y terminan en cero quedan fuera de esta vista. Movimiento indica el neto; tocá una columna para ordenar. Los filtros superiores gobiernan los totales y el gráfico.</p></div>
-            <div class="flex flex-wrap items-center gap-2"><button type="button" onclick="exportarIntradiaExcel(this)" ${!tabla.length?'disabled':''} class="text-xs text-violet-200 border border-violet-600 rounded-lg px-3 py-2 hover:bg-violet-950 disabled:opacity-40">⬇ Exportar Excel (${tabla.length.toLocaleString('es-AR')})</button><select class="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs" onchange="elegirClientesIntradia(this.value)">
+            <div class="flex flex-wrap items-center gap-2"><button type="button" onclick="exportarIntradiaExcel(this)" ${!tabla.length?'disabled':''} class="text-xs text-violet-200 border border-violet-600 rounded-lg px-3 py-2 hover:bg-violet-950 disabled:opacity-40">⬇ Exportar moneda (${tabla.length.toLocaleString('es-AR')})</button><button type="button" onclick="exportarIntradiaExcel(this,true)" class="text-xs text-violet-200 border border-violet-600 rounded-lg px-3 py-2 hover:bg-violet-950">⬇ Exportar todas las monedas</button><select class="bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs" onchange="elegirClientesIntradia(this.value)">
                 ${[['saldos','Con saldo inicial o estimado'],['movimientos','Con actividad o revisión'],['todos','Todos los clientes (incluye cero)'],['negativos','Estimados negativos']].map(([v,l])=>`<option value="${v}" ${modoClientesIntradia===v?'selected':''}>${l}</option>`).join('')}
             </select></div></div>
             <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="text-slate-400 bg-slate-900"><tr>

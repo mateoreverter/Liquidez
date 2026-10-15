@@ -107,10 +107,27 @@
             </div>
 
             <div class="flex items-center gap-2">
-                <label class="text-slate-400" for="filtroFA">FA:</label>
-                <select id="filtroFA" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white focus:outline-none focus:border-blue-500" onchange="alCambiarFiltro('FA')">
-                    <option value="Todas">Todas</option>
+                <label class="text-slate-400" for="filtroEquipo">Equipo:</label>
+                <select id="filtroEquipo" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white focus:outline-none focus:border-blue-500" onchange="alCambiarFiltro('Equipo')">
+                    <option value="Todos">Todos</option>
+                    <option value="SS">SS</option>
+                    <option value="VL">VL</option>
                 </select>
+            </div>
+
+            <div class="relative flex items-center gap-2" onclick="event.stopPropagation()">
+                <label class="text-slate-400">FA:</label>
+                <button type="button" id="btnDropdownFA" onclick="toggleDropdownFA()" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1 text-white text-left min-w-[140px] max-w-[220px] truncate flex justify-between items-center gap-2">
+                    <span id="labelDropdownFA">Todos</span>
+                    <span class="text-[10px] text-slate-400">▼</span>
+                </button>
+                <div id="dropdownFAMenu" class="hidden absolute top-full left-8 mt-1 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-2 z-40 space-y-2">
+                    <div class="flex justify-between text-[11px] text-sky-400 px-1">
+                        <button type="button" class="hover:underline" onclick="seleccionarTodosFA(true)">Seleccionar todos</button>
+                        <button type="button" class="hover:underline" onclick="seleccionarTodosFA(false)">Deseleccionar</button>
+                    </div>
+                    <div id="listaFAsCheckboxes" class="max-h-48 overflow-y-auto space-y-1 pr-1 text-slate-300 text-xs"></div>
+                </div>
             </div>
 
             <div class="relative flex items-center gap-2" onclick="event.stopPropagation()">
@@ -177,6 +194,12 @@
         let monedaEvolucionSeleccionada = 'ARS';
         let asesoresSeleccionados = new Set();
         let listaAsesoresVisibles = [];
+        const FAS_POR_EQUIPO = {
+            SS: new Set(['Dhers', 'Lascano', 'Saner', 'Solari', 'Sproviero']),
+            VL: new Set(['Lanzilotti', 'Moyano'])
+        };
+        let fasSeleccionados = new Set();
+        let listaFAsVisibles = [];
         let historialFechas = [];
         let historialEsPorCliente = false;
         let clienteSeleccionadoId = '';
@@ -213,27 +236,59 @@
             return estado;
         }
 
-        function exportarDescubiertosExcel(boton) {
+        function filasDescubiertosTodasMonedas() {
+            const universo = obtenerDatosFiltrados();
+            const aumPorAsesor = {};
+            universo.forEach(r => {
+                const asesor = r.asesor || 'S/D';
+                aumPorAsesor[asesor] = (aumPorAsesor[asesor] || 0) + r.AUM;
+            });
+            const comparar = new Intl.Collator('es-AR',{numeric:true,sensitivity:'base'}).compare;
+            return [['ARS','ARS_CI'],['USD MEP','MEP_CI'],['USD Cable','CABLE_CI']].flatMap(([moneda,columna]) => {
+                const negativos = universo.filter(r => Number(r[columna]) < 0);
+                const total = negativos.reduce((s,r)=>s+Math.abs(r[columna]),0);
+                const participacion = r => total ? Math.abs(r[columna])/total : 0;
+                const ratio = r => {
+                    const aum = aumPorAsesor[r.asesor] || 0;
+                    return aum ? (moneda === 'ARS' ? Math.abs(r[columna])/(r.TC_MEP || 1540.0) : Math.abs(r[columna]))/aum : 0;
+                };
+                const valorOrden = r => ({cuenta:()=>r.cuenta || '',asesor:()=>r.asesor || '',
+                    saldo:()=>Math.abs(r[columna]),mepBend:()=>moneda === 'USD MEP' ? r.MEP_BEND : Math.abs(r[columna]),
+                    porcentaje:()=>participacion(r),ratio:()=>ratio(r)})[ordenLiq]();
+                negativos.sort((a,b) => {
+                    const va = valorOrden(a), vb = valorOrden(b);
+                    const cmp = typeof va === 'string' ? comparar(va,vb) : va-vb;
+                    return (direccionOrdenLiq === 'asc' ? cmp : -cmp) || comparar(a.cuenta || '',b.cuenta || '');
+                });
+                return negativos.map(r => [moneda,r.cuenta || '',String(r.comitenteNumero || ''),r.FA || '',r.asesor || '',r.negocio || '',
+                    r[columna],moneda === 'USD MEP' ? r.MEP_BEND : null,participacion(r),ratio(r)]);
+            });
+        }
+
+        function exportarDescubiertosExcel(boton, todas=false) {
             const exportacion = datosExportacionDescubiertos;
             if (!exportacion || tabActual !== 'descubiertos') {
                 mostrarEstadoExportacion(boton, 'No hay datos listos para exportar en esta vista.');
                 return;
             }
             const {filas, moneda, fecha, encabezados} = exportacion;
-            mostrarEstadoExportacion(boton, `Preparando Excel de ${filas.length.toLocaleString('es-AR')} cuentas…`);
+            mostrarEstadoExportacion(boton, todas ? 'Preparando Excel de todas las monedas…'
+                : `Preparando Excel de ${filas.length.toLocaleString('es-AR')} cuentas…`);
             const etiqueta = boton.textContent;
             boton.disabled = true;
             boton.textContent = 'Preparando Excel…';
             setTimeout(() => {
-              try { descargarExcelSaldos({
+              try {
+                const filasExcel = todas ? filasDescubiertosTodasMonedas() : filas;
+                descargarExcelSaldos({
                 botonOrigen: boton,
-                titulo: 'Saldos descubiertos por cliente',
-                metadata: `Cluster: ${fecha} · Moneda: ${moneda} · ${filas.length} cuentas · Filtros seleccionados en el dashboard`,
-                encabezados,
-                filas,
-                columnasImporte: [5],
-                columnasPorcentaje: encabezados.length === 9 ? [7,8] : [6,7],
-                nombre: `saldos_descubiertos_${fecha}_${moneda}.xlsx`
+                titulo: todas ? 'Saldos descubiertos · Todas las monedas' : 'Saldos descubiertos por cliente',
+                metadata: `Cluster: ${fecha} · ${todas ? 'ARS / USD MEP / USD Cable · Una fila por cliente y moneda, sin sumar monedas' : `Moneda: ${moneda}`} · ${filasExcel.length} filas · Filtros seleccionados en el dashboard`,
+                encabezados: todas ? ['Moneda','Cuenta','Comitente','FA','Asesor','Negocio','Saldo descubierto','MEP Bendecidos','% del descubierto','Desc. / AUM Asesor'] : encabezados,
+                filas: filasExcel,
+                columnasImporte: todas ? [6,7] : moneda === 'MEP' ? [5,6] : [5],
+                columnasPorcentaje: todas ? [8,9] : encabezados.length === 9 ? [7,8] : [6,7],
+                nombre: `saldos_descubiertos_${fecha}_${todas?'todas_monedas':moneda}.xlsx`
               }); } catch (error) {
                   console.error('No se pudo iniciar la exportación:', error);
                   mostrarEstadoExportacion(boton, `No se pudo iniciar la exportación: ${error.message || error}`);
@@ -522,36 +577,95 @@
             }
         };
 
+        function faPerteneceEquipo(fa) {
+            const equipo = document.getElementById('filtroEquipo').value;
+            return equipo === 'Todos' || Boolean(FAS_POR_EQUIPO[equipo]?.has(fa));
+        }
+
+        function faPasaFiltros(fa) {
+            return faPerteneceEquipo(fa) && fasSeleccionados.has(fa);
+        }
+
+        function construirCheckboxesFA() {
+            const container = document.getElementById('listaFAsCheckboxes');
+            container.replaceChildren();
+            listaFAsVisibles.forEach(fa => {
+                const etiqueta = document.createElement('label');
+                etiqueta.className = 'flex items-center gap-2 hover:bg-slate-800/60 p-1 rounded cursor-pointer';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = fa;
+                checkbox.checked = fasSeleccionados.has(fa);
+                checkbox.className = 'accent-sky-500';
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) fasSeleccionados.add(fa);
+                    else fasSeleccionados.delete(fa);
+                    sincronizarFiltrosCascada('FA');
+                    renderizarTabActual();
+                });
+                const nombre = document.createElement('span');
+                nombre.className = 'truncate';
+                nombre.textContent = fa;
+                etiqueta.append(checkbox, nombre);
+                container.appendChild(etiqueta);
+            });
+        }
+
+        function actualizarLabelDropdownFA() {
+            const cantidad = fasSeleccionados.size;
+            const total = listaFAsVisibles.length;
+            document.getElementById('labelDropdownFA').innerText = cantidad === total && total > 0
+                ? 'Todos' : cantidad === 0 ? 'Ninguno' : cantidad === 1
+                    ? [...fasSeleccionados][0] : `${cantidad} seleccionados`;
+        }
+
+        function seleccionarTodosFA(estado) {
+            fasSeleccionados = new Set(estado ? listaFAsVisibles : []);
+            sincronizarFiltrosCascada('FA');
+            renderizarTabActual();
+        }
+
+        function toggleDropdownFA() {
+            document.getElementById('dropdownAsesorMenu').classList.add('hidden');
+            document.getElementById('dropdownClienteMenu').classList.add('hidden');
+            document.getElementById('dropdownFAMenu').classList.toggle('hidden');
+        }
+
         function sincronizarFiltrosCascada(origen = '') {
-            const selFA = document.getElementById('filtroFA');
             const selNegocio = document.getElementById('filtroNegocio');
-
-            let faVal = selFA.value || "Todas";
             let negVal = selNegocio.value || "Todas";
+            const estabanTodos = listaFAsVisibles.length > 0 && fasSeleccionados.size === listaFAsVisibles.length;
+            let poolForFA = rawData.filter(r => faPerteneceEquipo(r.FA) && (negVal === 'Todas' || r.negocio === negVal));
+            let fasDisponibles = [...new Set(poolForFA.map(r => r.FA).filter(Boolean))].sort();
+            if (origen === 'Equipo' && !fasDisponibles.length && negVal !== 'Todas') {
+                negVal = 'Todas';
+                poolForFA = rawData.filter(r => faPerteneceEquipo(r.FA));
+                fasDisponibles = [...new Set(poolForFA.map(r => r.FA).filter(Boolean))].sort();
+            }
+            if (origen === '' || origen === 'Equipo' || (origen === 'Negocio' && estabanTodos)) {
+                fasSeleccionados = new Set(fasDisponibles);
+            } else {
+                fasSeleccionados = new Set([...fasSeleccionados].filter(fa => fasDisponibles.includes(fa)));
+                if (origen === 'Negocio' && fasSeleccionados.size === 0) fasSeleccionados = new Set(fasDisponibles);
+            }
+            listaFAsVisibles = fasDisponibles;
+            construirCheckboxesFA();
+            actualizarLabelDropdownFA();
 
-            let poolForFA = rawData;
-            if (negVal !== "Todas") poolForFA = poolForFA.filter(r => r.negocio === negVal);
-            const fasDisponibles = [...new Set(poolForFA.map(r => r.FA).filter(Boolean))].sort();
-            
-            selFA.innerHTML = '<option value="Todas">Todas</option>' + fasDisponibles.map(f => `<option value="${f}">${f}</option>`).join('');
-            if (fasDisponibles.includes(faVal)) selFA.value = faVal;
-            else selFA.value = "Todas";
-
-            let poolForNeg = rawData;
-            if (selFA.value !== "Todas") poolForNeg = poolForNeg.filter(r => r.FA === selFA.value);
+            const poolForNeg = rawData.filter(r => faPerteneceEquipo(r.FA) &&
+                (fasSeleccionados.size === 0 || fasSeleccionados.has(r.FA)));
             const negsDisponibles = [...new Set(poolForNeg.map(r => r.negocio).filter(Boolean))].sort();
 
             selNegocio.innerHTML = '<option value="Todas">Todas</option>' + negsDisponibles.map(n => `<option value="${n}">${n}</option>`).join('');
             if (negsDisponibles.includes(negVal)) selNegocio.value = negVal;
             else selNegocio.value = "Todas";
 
-            let poolForAsesores = rawData;
-            if (selFA.value !== "Todas") poolForAsesores = poolForAsesores.filter(r => r.FA === selFA.value);
-            if (selNegocio.value !== "Todas") poolForAsesores = poolForAsesores.filter(r => r.negocio === selNegocio.value);
+            const poolForAsesores = rawData.filter(r => faPasaFiltros(r.FA) &&
+                (selNegocio.value === 'Todas' || r.negocio === selNegocio.value));
 
             listaAsesoresVisibles = [...new Set(poolForAsesores.map(r => r.asesor).filter(Boolean))].sort();
 
-            if (origen === 'FA' || origen === 'Negocio' || origen === '') {
+            if (origen === 'FA' || origen === 'Equipo' || origen === 'Negocio' || origen === '') {
                 asesoresSeleccionados = new Set(listaAsesoresVisibles);
             } else {
                 asesoresSeleccionados = new Set([...asesoresSeleccionados].filter(a => listaAsesoresVisibles.includes(a)));
@@ -582,13 +696,16 @@
         }
 
         function toggleDropdownAsesor() {
+            document.getElementById('dropdownFAMenu').classList.add('hidden');
             document.getElementById('dropdownClienteMenu').classList.add('hidden');
             document.getElementById('dropdownAsesorMenu').classList.toggle('hidden');
         }
 
         function cerrarDropdowns(e) {
+            const menuFA = document.getElementById('dropdownFAMenu');
             const menuAsesor = document.getElementById('dropdownAsesorMenu');
             const menuCliente = document.getElementById('dropdownClienteMenu');
+            if (menuFA && !menuFA.classList.contains('hidden')) menuFA.classList.add('hidden');
             if (menuAsesor && !menuAsesor.classList.contains('hidden')) menuAsesor.classList.add('hidden');
             if (menuCliente && !menuCliente.classList.contains('hidden')) menuCliente.classList.add('hidden');
         }
@@ -639,13 +756,12 @@
         }
 
         function actualizarClientesVisibles() {
-            const fFA = document.getElementById('filtroFA').value;
             const fNegocio = document.getElementById('filtroNegocio').value;
             const todosAsesores = asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length;
             const clientesPorId = new Map();
 
             rawData.forEach(row => {
-                if (fFA !== 'Todas' && row.FA !== fFA) return;
+                if (!faPasaFiltros(row.FA)) return;
                 if (fNegocio !== 'Todas' && row.negocio !== fNegocio) return;
                 if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return;
                 if (!row.clienteId || clientesPorId.has(row.clienteId)) return;
@@ -659,7 +775,7 @@
 
             if (historialEsPorCliente) {
                 rawHistory.forEach(row => {
-                    if (fFA !== 'Todas' && row.fa !== fFA) return;
+                    if (!faPasaFiltros(row.fa)) return;
                     if (fNegocio !== 'Todas' && row.negocio !== fNegocio) return;
                     if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return;
                     if (!row.clienteId || clientesPorId.has(row.clienteId)) return;
@@ -745,6 +861,7 @@
             const menu = document.getElementById('dropdownClienteMenu');
             const seAbrira = menu.classList.contains('hidden');
             document.getElementById('dropdownAsesorMenu').classList.add('hidden');
+            document.getElementById('dropdownFAMenu').classList.add('hidden');
             menu.classList.toggle('hidden');
             if (seAbrira) {
                 filtrarListaClientesUI();
@@ -769,7 +886,7 @@
         }
 
         function borrarFiltros() {
-            document.getElementById('filtroFA').value = "Todas";
+            document.getElementById('filtroEquipo').value = 'Todos';
             document.getElementById('filtroNegocio').value = "Todas";
             document.getElementById('filtroMoneda').value = "ARS";
             monedaEvolucionSeleccionada = "ARS";
@@ -797,12 +914,11 @@
         });
 
         function obtenerDatosFiltrados() {
-            const fFA = document.getElementById('filtroFA').value;
             const fNegocio = document.getElementById('filtroNegocio').value;
             const todosAsesores = (asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length);
 
             return rawData.filter(row => {
-                if (fFA !== "Todas" && row.FA !== fFA) return false;
+                if (!faPasaFiltros(row.FA)) return false;
                 if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return false;
                 if (fNegocio !== "Todas" && row.negocio !== fNegocio) return false;
                 if (tabActual !== 'aum' && clienteSeleccionadoId && row.clienteId !== clienteSeleccionadoId) return false;
@@ -811,12 +927,11 @@
         }
 
         function obtenerHistorialFiltrado() {
-            const fFA = document.getElementById('filtroFA').value;
             const fNegocio = document.getElementById('filtroNegocio').value;
             const todosAsesores = (asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length);
 
             return rawHistory.filter(row => {
-                if (fFA !== "Todas" && row.fa !== fFA) return false;
+                if (!faPasaFiltros(row.fa)) return false;
                 if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return false;
                 if (fNegocio !== "Todas" && row.negocio !== fNegocio) return false;
                 if (clienteSeleccionadoId) {
@@ -1217,7 +1332,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     ? data.reduce((acc, r) => acc + r[colTarget], 0)
                     : totalLiquidezUniverso;
 
-                const fFA = document.getElementById('filtroFA').value;
+                const faUnico = fasSeleccionados.size === 1 ? [...fasSeleccionados][0] : null;
                 const tieneFiltroAsesor = (asesoresSeleccionados.size > 0 && asesoresSeleccionados.size < listaAsesoresVisibles.length);
 
                 let nivelPie = "FA";
@@ -1230,11 +1345,11 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                     tituloPie = esDescubiertos
                         ? `Distribución del descubierto por Cliente (Top 15)`
                         : `Distribución por Cliente (Top 15)`;
-                } else if (fFA !== "Todas") {
+                } else if (faUnico) {
                     nivelPie = "Asesor";
                     tituloPie = esDescubiertos
-                        ? `Distribución del descubierto por Asesor - ${fFA} (Top 15)`
-                        : `Distribución por Asesor - ${fFA} (Top 15)`;
+                        ? `Distribución del descubierto por Asesor - ${faUnico} (Top 15)`
+                        : `Distribución por Asesor - ${faUnico} (Top 15)`;
                 }
 
                 const etiquetaPorcentaje = esDescubiertos ? '% del descubierto' : '% del Total';
@@ -1273,7 +1388,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                         || compararNombres(String(a.comitenteNumero || ''),String(b.comitenteNumero || ''));
                 });
                 const firmaActualLiq = JSON.stringify([tabActual,monedaSel,
-                    document.getElementById('filtroFA').value,document.getElementById('filtroNegocio').value,
+                    document.getElementById('filtroEquipo').value,[...fasSeleccionados].sort(),document.getElementById('filtroNegocio').value,
                     [...asesoresSeleccionados].sort(),clienteSeleccionadoId]);
                 if (firmaActualLiq !== firmaFiltrosLiq) { paginaLiq = 0; firmaFiltrosLiq = firmaActualLiq; }
                 const paginasLiq = Math.max(1,Math.ceil(sortedLiq.length/60));
@@ -1295,7 +1410,7 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                 <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
                                     <h3 class="text-sm font-bold text-white">${titleLeft}</h3>
                                     <div class="flex flex-wrap items-center gap-2">
-                                        ${esDescubiertos ? `<button type="button" onclick="exportarDescubiertosExcel(this)" ${!sortedLiq.length?'disabled':''} class="text-xs text-sky-200 border border-sky-700 rounded-lg px-3 py-1.5 hover:bg-sky-950 disabled:opacity-40">⬇ Exportar Excel (${sortedLiq.length.toLocaleString('es-AR')})</button>` : ''}
+                                        ${esDescubiertos ? `<button type="button" onclick="exportarDescubiertosExcel(this)" ${!sortedLiq.length?'disabled':''} class="text-xs text-sky-200 border border-sky-700 rounded-lg px-3 py-1.5 hover:bg-sky-950 disabled:opacity-40">⬇ Exportar moneda (${sortedLiq.length.toLocaleString('es-AR')})</button><button type="button" onclick="exportarDescubiertosExcel(this,true)" class="text-xs text-sky-200 border border-sky-700 rounded-lg px-3 py-1.5 hover:bg-sky-950">⬇ Exportar todas las monedas</button>` : ''}
                                         <span class="text-xs ${claseAyuda} font-semibold px-2.5 py-1 rounded-md">💡 Doble click para ficha completa</span>
                                     </div>
                                 </div>
