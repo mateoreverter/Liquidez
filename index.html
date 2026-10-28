@@ -14,6 +14,7 @@
     <!-- ARCHIVO DE DATOS LOCAL -->
     <script src="datos_cluster.js"></script>
     <script src="historial_liquidez.js"></script>
+    <script src="historial_aum.js"></script>
     <script src="datos_intradia.js"></script>
     <style>
         body { background-color: #0b111e; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
@@ -95,6 +96,11 @@
     <section class="card p-3 rounded-xl flex flex-wrap gap-4 items-center text-xs justify-between">
         <div class="flex flex-wrap gap-4 items-center">
             <span class="font-bold text-slate-300">Filtros:</span>
+
+            <div id="filtroFechaAUMBox" class="flex items-center gap-2">
+                <label class="text-slate-400" for="filtroFechaAUM">AUM al:</label>
+                <select id="filtroFechaAUM" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white focus:outline-none focus:border-blue-500" onchange="cambiarFechaAUM(this.value)" title="Cada fecha se guarda al procesar el cluster diario"></select>
+            </div>
             
             <div class="flex items-center gap-2" id="filtroMonedaBox" style="display: none;">
                 <label class="text-sky-400 font-bold" for="filtroMoneda">Moneda:</label>
@@ -191,6 +197,9 @@
         let chartPieInstance = null;
         let chartEvolucionInstance = null;
         let rawHistory = [];
+        let fechaAUMSeleccionada = '';
+        const fotosAUMCargadas = new Map();
+        let errorFotoAUM = '';
         let monedaEvolucionSeleccionada = 'ARS';
         let asesoresSeleccionados = new Set();
         let listaAsesoresVisibles = [];
@@ -413,6 +422,7 @@
             const esSaldos = tab !== 'aum';
             boxMoneda.style.display = esSaldos ? 'flex' : 'none';
             boxCliente.style.display = esSaldos ? 'flex' : 'none';
+            document.getElementById('filtroFechaAUMBox').style.display = esSaldos ? 'none' : 'flex';
 
             const opcionCable = document.querySelector('#filtroMoneda option[value="Cable_CV7000"]');
             if (opcionCable) {
@@ -426,7 +436,70 @@
                 document.getElementById('filtroMoneda').value = 'ARS';
                 monedaEvolucionSeleccionada = 'ARS';
             }
+            sincronizarFiltrosCascada('Tab');
             renderizarTabActual();
+        }
+
+        function datosBaseAUM() {
+            if (!fechaAUMSeleccionada || fechaAUMSeleccionada === fechaCorteCluster) return rawData;
+            return fotosAUMCargadas.get(fechaAUMSeleccionada) || null;
+        }
+
+        function iniciarFechasAUM() {
+            const actual = typeof fechaCorteCluster !== 'undefined' ? fechaCorteCluster : '';
+            const guardadas = typeof fechasHistorialAUM !== 'undefined' && Array.isArray(fechasHistorialAUM)
+                ? fechasHistorialAUM : [];
+            const fechas = [...new Set([actual, ...guardadas])]
+                .filter(fecha => /^\d{4}-\d{2}-\d{2}$/.test(fecha)).sort().reverse();
+            const selector = document.getElementById('filtroFechaAUM');
+            selector.replaceChildren();
+            fechas.forEach(fecha => {
+                const opcion = document.createElement('option');
+                opcion.value = fecha;
+                opcion.textContent = `${formatearFechaCorta(fecha)}${fecha === actual ? ' (cluster actual)' : ''}`;
+                selector.appendChild(opcion);
+            });
+            fechaAUMSeleccionada = actual;
+            selector.value = actual;
+        }
+
+        function cambiarFechaAUM(fecha) {
+            const selector = document.getElementById('filtroFechaAUM');
+            if (!Array.from(selector.options).some(opcion => opcion.value === fecha)) return;
+            fechaAUMSeleccionada = fecha;
+            errorFotoAUM = '';
+            if (datosBaseAUM()) {
+                sincronizarFiltrosCascada('FechaAUM');
+                renderizarTabActual();
+                return;
+            }
+            renderizarTabActual();
+            const script = document.createElement('script');
+            script.src = `historial_aum/${fecha}.js`;
+            script.onload = () => {
+                const filas = window.fotosAUMHistoricas?.[fecha];
+                if (!Array.isArray(filas)) {
+                    if (fechaAUMSeleccionada === fecha) errorFotoAUM = 'La foto de AUM no tiene un formato válido.';
+                } else {
+                    fotosAUMCargadas.set(fecha, filas.map(fila => ({
+                        clienteId: String(fila[0] ?? ''), cuenta: fila[1] || 'S/D',
+                        comitenteNumero: fila[2] || 'S/D', FA: fila[3] || 'Otro',
+                        asesor: fila[4] || 'S/D', negocio: fila[5] || 'S/D',
+                        AUM: Number(fila[6]) || 0, esActivo: fila[7] === 1
+                    })));
+                }
+                if (fechaAUMSeleccionada === fecha && tabActual === 'aum') {
+                    if (!errorFotoAUM) sincronizarFiltrosCascada('FechaAUM');
+                    renderizarTabActual();
+                }
+            };
+            script.onerror = () => {
+                if (fechaAUMSeleccionada === fecha) {
+                    errorFotoAUM = `Falta historial_aum/${fecha}.js. Copiá la foto de ese día junto con el índice historial_aum.js.`;
+                    if (tabActual === 'aum') renderizarTabActual();
+                }
+            };
+            document.head.appendChild(script);
         }
 
         function cambiarMonedaGlobal(moneda) {
@@ -563,6 +636,7 @@
                     );
                 });
 
+                iniciarFechasAUM();
                 sincronizarFiltrosCascada();
                 document.getElementById('fileStatus').innerHTML = `<span class="text-emerald-400 whitespace-nowrap">✅ ${rawData.length.toLocaleString('es-AR')} cuentas de SS/VL procesadas</span>`;
                 cargarFechaPublicacion();
@@ -635,24 +709,27 @@
             const selNegocio = document.getElementById('filtroNegocio');
             let negVal = selNegocio.value || "Todas";
             const estabanTodos = listaFAsVisibles.length > 0 && fasSeleccionados.size === listaFAsVisibles.length;
-            let poolForFA = rawData.filter(r => faPerteneceEquipo(r.FA) && (negVal === 'Todas' || r.negocio === negVal));
+            const datosParaFiltros = (tabActual === 'aum' ? datosBaseAUM() : rawData) || rawData;
+            let poolForFA = datosParaFiltros.filter(r => faPerteneceEquipo(r.FA) && (negVal === 'Todas' || r.negocio === negVal));
             let fasDisponibles = [...new Set(poolForFA.map(r => r.FA).filter(Boolean))].sort();
-            if (origen === 'Equipo' && !fasDisponibles.length && negVal !== 'Todas') {
+            if (['Equipo', 'FechaAUM', 'Tab'].includes(origen) && !fasDisponibles.length && negVal !== 'Todas') {
                 negVal = 'Todas';
-                poolForFA = rawData.filter(r => faPerteneceEquipo(r.FA));
+                poolForFA = datosParaFiltros.filter(r => faPerteneceEquipo(r.FA));
                 fasDisponibles = [...new Set(poolForFA.map(r => r.FA).filter(Boolean))].sort();
             }
-            if (origen === '' || origen === 'Equipo' || (origen === 'Negocio' && estabanTodos)) {
+            if (origen === '' || origen === 'Equipo' ||
+                (['Negocio', 'FechaAUM', 'Tab'].includes(origen) && estabanTodos)) {
                 fasSeleccionados = new Set(fasDisponibles);
             } else {
                 fasSeleccionados = new Set([...fasSeleccionados].filter(fa => fasDisponibles.includes(fa)));
-                if (origen === 'Negocio' && fasSeleccionados.size === 0) fasSeleccionados = new Set(fasDisponibles);
+                if (['Negocio', 'FechaAUM', 'Tab'].includes(origen) && fasSeleccionados.size === 0)
+                    fasSeleccionados = new Set(fasDisponibles);
             }
             listaFAsVisibles = fasDisponibles;
             construirCheckboxesFA();
             actualizarLabelDropdownFA();
 
-            const poolForNeg = rawData.filter(r => faPerteneceEquipo(r.FA) &&
+            const poolForNeg = datosParaFiltros.filter(r => faPerteneceEquipo(r.FA) &&
                 (fasSeleccionados.size === 0 || fasSeleccionados.has(r.FA)));
             const negsDisponibles = [...new Set(poolForNeg.map(r => r.negocio).filter(Boolean))].sort();
 
@@ -660,7 +737,7 @@
             if (negsDisponibles.includes(negVal)) selNegocio.value = negVal;
             else selNegocio.value = "Todas";
 
-            const poolForAsesores = rawData.filter(r => faPasaFiltros(r.FA) &&
+            const poolForAsesores = datosParaFiltros.filter(r => faPasaFiltros(r.FA) &&
                 (selNegocio.value === 'Todas' || r.negocio === selNegocio.value));
 
             listaAsesoresVisibles = [...new Set(poolForAsesores.map(r => r.asesor).filter(Boolean))].sort();
@@ -886,6 +963,11 @@
         }
 
         function borrarFiltros() {
+            if (typeof fechaCorteCluster !== 'undefined') {
+                fechaAUMSeleccionada = fechaCorteCluster;
+                document.getElementById('filtroFechaAUM').value = fechaCorteCluster;
+                errorFotoAUM = '';
+            }
             document.getElementById('filtroEquipo').value = 'Todos';
             document.getElementById('filtroNegocio').value = "Todas";
             document.getElementById('filtroMoneda').value = "ARS";
@@ -917,7 +999,8 @@
             const fNegocio = document.getElementById('filtroNegocio').value;
             const todosAsesores = (asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length);
 
-            return rawData.filter(row => {
+            const origen = tabActual === 'aum' ? datosBaseAUM() : rawData;
+            return (origen || []).filter(row => {
                 if (!faPasaFiltros(row.FA)) return false;
                 if (!todosAsesores && !asesoresSeleccionados.has(row.asesor)) return false;
                 if (fNegocio !== "Todas" && row.negocio !== fNegocio) return false;
@@ -1045,6 +1128,14 @@
             if (typeof destruirGraficoIntradia === 'function') destruirGraficoIntradia();
             if (rawData.length === 0) return;
 
+            if (tabActual === 'aum' && !datosBaseAUM()) {
+                document.getElementById('tabContent').innerHTML = `
+                    <div class="card p-8 rounded-2xl text-sm ${errorFotoAUM ? 'text-amber-300' : 'text-slate-300'}">
+                        ${errorFotoAUM || 'Cargando foto histórica de AUM...'}
+                    </div>`;
+                return;
+            }
+
             let data = obtenerDatosFiltrados();
             const container = document.getElementById('tabContent');
 
@@ -1067,6 +1158,7 @@
                 });
 
                 container.innerHTML = `
+                    <div class="text-xs text-sky-300">AUM al ${formatearFechaCorta(fechaAUMSeleccionada)}${fechaAUMSeleccionada !== fechaCorteCluster ? ' · Foto histórica' : ' · Cluster actual'}</div>
                     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
                         <div class="lg:col-span-5 space-y-6">
                             <div class="card p-5 rounded-2xl">
