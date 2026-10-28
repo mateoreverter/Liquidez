@@ -447,8 +447,10 @@
 
         function iniciarFechasAUM() {
             const actual = typeof fechaCorteCluster !== 'undefined' ? fechaCorteCluster : '';
-            const guardadas = typeof fechasHistorialAUM !== 'undefined' && Array.isArray(fechasHistorialAUM)
-                ? fechasHistorialAUM : [];
+            const guardadas = typeof historialAUM !== 'undefined' && historialAUM?.version === 3
+                ? Object.keys(historialAUM.archivos || {})
+                : typeof fechasHistorialAUM !== 'undefined' && Array.isArray(fechasHistorialAUM)
+                    ? fechasHistorialAUM : [];
             const fechas = [...new Set([actual, ...guardadas])]
                 .filter(fecha => /^\d{4}-\d{2}-\d{2}$/.test(fecha)).sort().reverse();
             const selector = document.getElementById('filtroFechaAUM');
@@ -463,6 +465,19 @@
             selector.value = actual;
         }
 
+        async function decodificarFotoAUM(fecha) {
+            const comprimido = window.fotosAUMComprimidas?.[fecha];
+            if (typeof comprimido !== 'string') return window.fotosAUMHistoricas?.[fecha];
+            if (typeof DecompressionStream === 'undefined') {
+                throw new Error('El navegador no puede descomprimir el histórico. Actualizalo o usá Chrome/Edge reciente.');
+            }
+            const bytes = Uint8Array.from(atob(comprimido), caracter => caracter.charCodeAt(0));
+            const flujo = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+            const filas = JSON.parse(await new Response(flujo).text());
+            delete window.fotosAUMComprimidas[fecha];
+            return filas;
+        }
+
         function cambiarFechaAUM(fecha) {
             const selector = document.getElementById('filtroFechaAUM');
             if (!Array.from(selector.options).some(opcion => opcion.value === fecha)) return;
@@ -475,18 +490,26 @@
             }
             renderizarTabActual();
             const script = document.createElement('script');
-            script.src = `historial_aum/${fecha}.js`;
-            script.onload = () => {
-                const filas = window.fotosAUMHistoricas?.[fecha];
-                if (!Array.isArray(filas)) {
-                    if (fechaAUMSeleccionada === fecha) errorFotoAUM = 'La foto de AUM no tiene un formato válido.';
-                } else {
+            const ruta = typeof historialAUM !== 'undefined' && historialAUM?.version === 3
+                ? historialAUM.archivos?.[fecha] : `historial_aum/${fecha}.js`;
+            if (!ruta || !/^historial_aum\/(?:\d{4}\/)?\d{4}-\d{2}-\d{2}\.js$/.test(ruta)) {
+                errorFotoAUM = 'La ruta de esta fecha en historial_aum.js no es válida.';
+                renderizarTabActual();
+                return;
+            }
+            script.src = ruta;
+            script.onload = async () => {
+                try {
+                    const filas = await decodificarFotoAUM(fecha);
+                    if (!Array.isArray(filas)) throw new Error('La foto de AUM no tiene un formato válido.');
                     fotosAUMCargadas.set(fecha, filas.map(fila => ({
                         clienteId: String(fila[0] ?? ''), cuenta: fila[1] || 'S/D',
                         comitenteNumero: fila[2] || 'S/D', FA: fila[3] || 'Otro',
                         asesor: fila[4] || 'S/D', negocio: fila[5] || 'S/D',
                         AUM: Number(fila[6]) || 0, esActivo: fila[7] === 1
                     })));
+                } catch (error) {
+                    if (fechaAUMSeleccionada === fecha) errorFotoAUM = `No se pudo abrir la foto de AUM: ${error.message}`;
                 }
                 if (fechaAUMSeleccionada === fecha && tabActual === 'aum') {
                     if (!errorFotoAUM) sincronizarFiltrosCascada('FechaAUM');
@@ -495,7 +518,7 @@
             };
             script.onerror = () => {
                 if (fechaAUMSeleccionada === fecha) {
-                    errorFotoAUM = `Falta historial_aum/${fecha}.js. Copiá la foto de ese día junto con el índice historial_aum.js.`;
+                    errorFotoAUM = `Falta ${ruta}. Copiá la foto de ese día junto con historial_aum.js.`;
                     if (tabActual === 'aum') renderizarTabActual();
                 }
             };
