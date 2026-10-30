@@ -196,6 +196,7 @@
         let chartCuentasInstance = null;
         let chartPieInstance = null;
         let chartEvolucionInstance = null;
+        let chartEvolucionAUMInstance = null;
         let rawHistory = [];
         let fechaAUMSeleccionada = '';
         const fotosAUMCargadas = new Map();
@@ -1143,10 +1144,36 @@
             return top15;
         }
 
+        function obtenerPuntosEvolucionAUM() {
+            const totales = typeof historialAUM !== 'undefined' && historialAUM?.version === 3
+                ? historialAUM.totales || {} : {};
+            const fechas = [...new Set([...Object.keys(totales), fechaCorteCluster])]
+                .filter(fecha => /^\d{4}-\d{2}-\d{2}$/.test(fecha)).sort();
+            const negocio = document.getElementById('filtroNegocio').value;
+            const todosAsesores = asesoresSeleccionados.size === 0 || asesoresSeleccionados.size === listaAsesoresVisibles.length;
+            const coincide = (fa, asesor, tipo) => faPasaFiltros(fa)
+                && (negocio === 'Todas' || negocio === tipo)
+                && (todosAsesores || asesoresSeleccionados.has(asesor));
+            return fechas.map(fecha => ({
+                fecha,
+                valor: fecha === fechaCorteCluster
+                    ? rawData.reduce((suma, row) => suma + (coincide(row.FA, row.asesor, row.negocio) ? row.AUM : 0), 0)
+                    : Array.isArray(totales[fecha])
+                        ? totales[fecha].reduce((suma, grupo) => suma +
+                            (coincide(grupo[0], grupo[1], grupo[2]) ? Number(grupo[3]) || 0 : 0), 0)
+                        : null
+            }));
+        }
+
         function renderizarTabActual() {
             if (tabActual === 'intradia') {
+                if (chartEvolucionAUMInstance) { chartEvolucionAUMInstance.destroy(); chartEvolucionAUMInstance = null; }
                 renderizarIntradia();
                 return;
+            }
+            if (tabActual !== 'aum' && chartEvolucionAUMInstance) {
+                chartEvolucionAUMInstance.destroy();
+                chartEvolucionAUMInstance = null;
             }
             if (typeof destruirGraficoIntradia === 'function') destruirGraficoIntradia();
             if (rawData.length === 0) return;
@@ -1239,6 +1266,17 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <div class="card p-5 rounded-2xl">
+                        <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+                            <div>
+                                <h3 class="text-sm font-bold text-white">Evolución del AUM en USD</h3>
+                                <p class="text-[11px] text-slate-400 mt-1">Histórico diario según los filtros seleccionados</p>
+                            </div>
+                            <div id="ultimoDatoEvolucionAUM" class="text-xs text-sky-300 font-semibold text-left sm:text-right"></div>
+                        </div>
+                        <div class="h-72 w-full"><canvas id="chartEvolucionAUM"></canvas></div>
                     </div>
 
                 `;
@@ -1385,6 +1423,52 @@ Inactivas: ${(100 - pct).toFixed(1)}%`;
                                     }
                                 }
                             }
+                        }
+                    }
+                });
+
+                const puntosAUM = obtenerPuntosEvolucionAUM();
+                const ultimoAUM = puntosAUM[puntosAUM.length - 1];
+                document.getElementById('ultimoDatoEvolucionAUM').innerHTML = ultimoAUM
+                    ? `<span class="text-slate-400 font-normal">Último registro (${formatearFechaCorta(ultimoAUM.fecha)}):</span><br>${formatAbrev(ultimoAUM.valor, 'USD ')}`
+                    : '<span class="text-slate-500">Sin historial de AUM</span>';
+                if (chartEvolucionAUMInstance) chartEvolucionAUMInstance.destroy();
+                chartEvolucionAUMInstance = new Chart(document.getElementById('chartEvolucionAUM'), {
+                    type: 'line',
+                    data: {
+                        labels: puntosAUM.map(punto => formatearFechaCorta(punto.fecha)),
+                        datasets: [{
+                            label: 'AUM en USD',
+                            data: puntosAUM.map(punto => punto.valor),
+                            borderColor: '#38bdf8',
+                            backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                            pointBackgroundColor: puntosAUM.map(punto => punto.fecha === fechaAUMSeleccionada ? '#a78bfa' : '#38bdf8'),
+                            pointBorderColor: '#e0f2fe',
+                            pointRadius: puntosAUM.map(punto => punto.fecha === fechaAUMSeleccionada ? 6 : 4),
+                            pointHoverRadius: 7,
+                            borderWidth: 2.5,
+                            tension: 0.25,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { top: 22, right: 12, left: 6 } },
+                        interaction: { intersect: false, mode: 'index' },
+                        scales: {
+                            x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                            y: {
+                                beginAtZero: puntosAUM.every(punto => punto.valor === 0),
+                                grace: '12%',
+                                ticks: { color: '#94a3b8', callback: valor => formatAbrev(valor, 'USD ') },
+                                grid: { color: '#1e293b' }
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            datalabels: { display: false },
+                            tooltip: { callbacks: { label: contexto => ` AUM: USD ${fmt(contexto.parsed.y)}` } }
                         }
                     }
                 });
