@@ -614,13 +614,32 @@
             return historialAnterior;
         }
 
+        async function leerHistorialLiquidez() {
+            if (typeof historialLiquidezComprimido === 'undefined') {
+                return typeof historialLiquidez !== 'undefined' ? historialLiquidez : [];
+            }
+            if (typeof DecompressionStream === 'undefined') {
+                throw new Error('El navegador no puede descomprimir el historial. Usá una versión reciente de Chrome o Edge.');
+            }
+            const bytes = Uint8Array.from(atob(historialLiquidezComprimido), caracter => caracter.charCodeAt(0));
+            const flujo = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+            return JSON.parse(await new Response(flujo).text());
+        }
+
         // CARGA AUTOMÁTICA AL ABRIR EL HTML
-        window.onload = () => {
+        window.onload = async () => {
             if (typeof datosCluster !== 'undefined') {
                 rawData = datosCluster;
-                rawHistory = normalizarHistorial(
-                    (typeof historialLiquidez !== 'undefined') ? historialLiquidez : []
-                );
+                try {
+                    rawHistory = normalizarHistorial(await leerHistorialLiquidez());
+                } catch (error) {
+                    document.getElementById('fileStatus').innerText = '⚠️ Error en el historial de liquidez';
+                    document.getElementById('tabContent').innerHTML = `
+                        <div class="card p-12 text-center text-rose-400 font-semibold border border-rose-500/20">
+                            No se pudo abrir historial_liquidez.js: ${error.message}
+                        </div>`;
+                    return;
+                }
                 const tasasMep = rawData.map(row => Number(row['Tipo Cbio MEP'] || row['Tipo Cambio MEP']))
                     .filter(tasa => Number.isFinite(tasa) && tasa > 0);
                 const rangoTasas = tasasMep.reduce((rango, tasa) => [Math.min(rango[0], tasa), Math.max(rango[1], tasa)], [Infinity, -Infinity]);
